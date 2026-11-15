@@ -338,6 +338,7 @@ class StreamFrames(object):
         self.decoded = 0
         self.err = None
         self._ready = int(ready)
+        self._pos = 0
         self._blob = blob
         self._th = threading.Thread(target=self._run)
         self._th.daemon = True
@@ -356,16 +357,41 @@ class StreamFrames(object):
     def _run(self):
         try:
             for i, rgb in enumerate(iter_frames(self._blob)):
+                # 别跑得比播放位置快太多，否则刚解出来的帧马上被淘汰掉。
+                while True:
+                    with self._lock:
+                        if i - self._pos <= self.window:
+                            break
+                    time.sleep(0.02)
                 arr = self._shrink(rgb)
                 with self._lock:
                     self._frames[i] = arr
                     self.decoded = i + 1
-                    cut = i - self.window
-                    if cut > 0:
-                        for k in [k for k in self._frames if k < cut]:
-                            del self._frames[k]
+                    drop = i - self.window
+                    if drop > self._pos:
+                        drop = self._pos
+                    for k in [k for k in self._frames if k < drop]:
+                        del self._frames[k]
         except Exception as exc:
             self.err = exc
+
+    def note_pos(self, idx):
+        """播放器告诉解码线程自己播到哪了，淘汰线不能越过它。"""
+        with self._lock:
+            self._pos = int(idx)
+
+    def resolve(self, idx):
+        """返回 idx 本身，或能顶上的最近一帧（解码掉队时用）。"""
+        with self._lock:
+            idx = int(idx)
+            if idx in self._frames:
+                return idx
+            if not self._frames:
+                return None
+            older = [k for k in self._frames if k <= idx]
+            if older:
+                return max(older)
+            return min(self._frames)
 
     def ready(self, n=None):
         with self._lock:
@@ -602,10 +628,15 @@ class Player(object):
         if self.count == 0:
             return False
         idx = int(max(0, min(self.count - 1, idx)))
-        ph = self._photo(idx, self._fit_size())
+        got = idx
+        if self._prov is not None:
+            got = self._prov.resolve(idx)
+            if got is None:
+                return False
+        ph = self._photo(got, self._fit_size())
         if ph is None:
             return False
-        self._cur = idx
+        self._cur = got
         self.image_label.configure(image=ph)
         return True
 
@@ -655,12 +686,12 @@ class Player(object):
             self._on_end()
             return
         idx = int(t * self.fps)
+        if self._prov is not None:
+            self._prov.note_pos(idx)
         if not self.show(idx):
-            back = max(0.0, (idx - 1) / float(self.fps))
-            self.base_pos = back
-            self.base_wall = time.monotonic()
-            self._update_bar(back)
-            self._schedule(0.12)
+            # 解码还没追上：时间照走，画面等下一次补上，别把时钟卡住。
+            self._update_bar(t)
+            self._schedule(0.05)
             return
         self._update_bar(t)
         nxt = (idx + 1) / self.fps
