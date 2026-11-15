@@ -35,10 +35,12 @@ All notable changes to this project. Format based on
   falls back to linear interpolation and the window says the pitch will move.
   Speed WAVs are built on a worker thread and cached per speed, so switching
   speed never blocks the UI.
-* **Live decode progress bar.** Opening a clip shows a progress bar, a
-  percentage, and the frame currently being decoded; when decoding finishes
-  that same window becomes the player, so the bar hands over to the playback
-  seek bar. `decode_video` gained a `progress(i, nframes, frame)` callback.
+* **Quiet start-up.** The window stays hidden while the clip decodes and appears
+  only once the first frame is ready, so no splash text flashes past and no
+  "unpacking" moment is visible — the process is only traceable in Task Manager.
+  `MTCODEC_VIEWER_SPLASH=1` restores the old progress splash (bar, percentage and
+  a live preview thumbnail); `decode_video` still drives it through its
+  `progress(i, nframes, frame)` callback.
 
 ### Changed
 
@@ -51,9 +53,12 @@ All notable changes to this project. Format based on
   so the window can be dragged larger or smaller and zooming in no longer
   turns detail into mush. Still images do the same and open at their native
   resolution.
-* **Redrawn player UI.** Dark flat skin with hand-drawn chips for speed, loop
-  and close-when-finished, a self-drawn seek bar with a round handle, and a
-  fixed-width time readout.
+* **Redrawn player UI.** A header line with a teal `MTC` tag, the file name and
+  `width × height · frames · duration`; rounded pill chips for play / speed /
+  loop / close-when-finished with a brighter `#12A9B4` accent and hover fill; the
+  primary play button filled rather than outlined; a rounded seek track with a
+  ring handle; and `m:ss.s` readouts on the Monospace face. The canvas falls
+  back to near-black so frames read as pictures, not panels.
 * `tools/build_exe.py --onedir` builds a folder bundle. Measured on the dev
   machine, start-to-close on the same sample: onefile 6.1–9.2 s, onedir
   4.1–6.1 s (both include a 1.2 s auto-close timer plus the decode step).

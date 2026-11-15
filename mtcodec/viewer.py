@@ -34,19 +34,41 @@ MAX_SIDE = int(os.environ.get("MTCODEC_VIEWER_MAX_SIDE", "1600") or 1600)
 DEFAULT_FPS = 24.0
 CACHE_LIMIT = 24
 
-BG = "#101317"
-FG = "#E8E6E1"
-DIM = "#8F98A4"
-BAR_BG = "#171B21"
-CHIP_BG = "#20242C"
-CHIP_HI = "#2B3240"
-TRACK = "#2A303A"
-ACCENT = "#0E717C"
+BG = "#0C0E12"
+FG = "#EFEDE8"
+DIM = "#7C8794"
+BAR_BG = "#14171C"
+CHIP_BG = "#222933"
+CHIP_HI = "#2A323D"
+TRACK = "#242B35"
+ACCENT = "#12A9B4"
+ACCENT_DIM = "#0B6E77"
+CANVAS_BG = "#07090B"
 FONT = "Microsoft YaHei"
 MONO = "Consolas"
 
 SPEEDS = (0.5, 1.0, 1.5, 2.0)
 FFMPEG = shutil.which("ffmpeg") or shutil.which("ffmpeg.exe")
+
+
+def fmt_time(sec):
+    """0:07.4 这样的读数，比裸秒数好认。"""
+    try:
+        total = max(0.0, float(sec))
+    except Exception:
+        total = 0.0
+    minutes = int(total // 60)
+    rest = total - minutes * 60
+    return "%d:%04.1f" % (minutes, rest)
+
+
+def round_rect(cv, x1, y1, x2, y2, r, **kw):
+    """Tk 没有圆角矩形，用平滑多边形近似。"""
+    r = min(r, (x2 - x1) / 2.0, (y2 - y1) / 2.0)
+    pts = [x1 + r, y1, x2 - r, y1, x2, y1, x2, y1 + r,
+           x2, y2 - r, x2, y2, x2 - r, y2, x1 + r, y2,
+           x1, y2, x1, y2 - r, x1, y1 + r, x1, y1]
+    return cv.create_polygon(pts, smooth=True, **kw)
 
 
 def sniff(blob):
@@ -331,18 +353,21 @@ class Player(object):
         self.start()
 
     # ---------- 界面 ----------
-    def _chip(self, parent, text, cmd, w=54, h=28):
+    def _chip(self, parent, text, cmd, w=54, h=26, primary=False):
         import tkinter as tk
         c = tk.Canvas(parent, width=w, height=h, bg=BAR_BG,
                       highlightthickness=0, cursor="hand2")
-        box = c.create_rectangle(0, 0, w, h, fill=CHIP_BG, outline="")
-        label = c.create_text(w / 2.0, h / 2.0, text=text, fill=FG,
-                              font=(FONT, 10))
+        fill_on = ACCENT if primary else CHIP_BG
+        box = round_rect(c, 1, 1, w - 1, h - 1, (h - 2) / 2.0, fill=fill_on,
+                         outline=("" if primary else "#2F3945"), width=1)
+        label = c.create_text(w / 2.0, h / 2.0, text=text,
+                              fill=("#FFFFFF" if primary else FG),
+                              font=(FONT, 10, "bold" if primary else "normal"))
         c.bind("<Button-1>", lambda e: cmd())
         c.bind("<Enter>", lambda e: c.itemconfigure(box, fill=CHIP_HI)
-               if not c.itemcget(box, "fill") in (ACCENT,) else None)
-        c.bind("<Leave>", lambda e: c.itemconfigure(box, fill=CHIP_BG)
-               if not c.itemcget(box, "fill") in (ACCENT,) else None)
+               if c.itemcget(box, "fill") not in (ACCENT,) else None)
+        c.bind("<Leave>", lambda e: c.itemconfigure(box, fill=fill_on)
+               if c.itemcget(box, "fill") not in (ACCENT,) else None)
         return c, box, label
 
     def _build_ui(self, title):
@@ -352,22 +377,34 @@ class Player(object):
             child.destroy()
         self.root.title(title)
         self.root.configure(bg=BG)
-        self.root.minsize(560, 380)
+        self.root.minsize(820, 420)
         self._chips = []
         self._togs = []
         self._cur = 0
 
         hf, wf = self.frames[0].shape[:2]
         try:
-            sw = min(max(640, wf + 24), 1200)
-            sh = int(round(sw * hf / float(wf))) + 112
+            sw = min(max(840, wf + 40), 1240)
+            sh = int(round(sw * hf / float(wf))) + 138
             sw = min(sw, self.root.winfo_screenwidth() - 80)
             sh = min(sh, self.root.winfo_screenheight() - 100)
             self.root.geometry("%dx%d" % (sw, sh))
         except Exception:
             pass
 
-        self.image_label = tk.Label(self.root, bg="#0B0D10", bd=0,
+        head = tk.Frame(self.root, bg=BG)
+        head.pack(side="top", fill="x", padx=16, pady=(10, 6))
+        tag = tk.Label(head, text="MTC", bg=ACCENT, fg="#FFFFFF",
+                       font=(FONT, 8, "bold"), padx=7, pady=1)
+        tag.pack(side="left")
+        tk.Label(head, text=title, bg=BG, fg=FG, anchor="w",
+                 font=(FONT, 11, "bold")).pack(side="left", padx=(9, 0))
+        meta = "%d×%d   ·   %d 帧   ·   %s" % (
+            wf, hf, self.count, fmt_time(self.duration))
+        tk.Label(head, text=meta, bg=BG, fg=DIM,
+                 font=(FONT, 9)).pack(side="right")
+
+        self.image_label = tk.Label(self.root, bg=CANVAS_BG, bd=0,
                                     highlightthickness=0)
         self.image_label.pack(fill="both", expand=True)
         self.image_label.bind("<Configure>", self._on_canvas_resize)
@@ -376,24 +413,24 @@ class Player(object):
         bar = tk.Frame(self.root, bg=BAR_BG)
         bar.pack(side="bottom", fill="x")
 
-        self.pb = tk.Canvas(bar, height=18, bg=BAR_BG, highlightthickness=0,
+        self.pb = tk.Canvas(bar, height=22, bg=BAR_BG, highlightthickness=0,
                             cursor="hand2")
-        self.pb.pack(fill="x", padx=14, pady=(10, 0))
+        self.pb.pack(fill="x", padx=12, pady=(8, 0))
         self.pb.bind("<Button-1>", self._pb_press)
         self.pb.bind("<B1-Motion>", self._pb_drag)
         self.pb.bind("<ButtonRelease-1>", self._pb_release)
         self.pb.bind("<Configure>", lambda e: self._draw_progress(self._shown_time()))
 
         row = tk.Frame(bar, bg=BAR_BG)
-        row.pack(fill="x", padx=14, pady=(8, 10))
+        row.pack(fill="x", padx=14, pady=(10, 12))
 
         self.btn_play, self._play_box, self._play_text = self._chip(
-            row, "暂停", self.toggle, 54)
+            row, "暂停", self.toggle, 72, 30, primary=True)
         self.btn_play.pack(side="left")
 
-        self.time_label = tk.Label(row, text="0.0 / 0.0 s", bg=BAR_BG, fg=DIM,
-                                   font=(MONO, 10))
-        self.time_label.pack(side="left", padx=(12, 0))
+        self.time_label = tk.Label(row, text="0:00.0 / %s" % fmt_time(self.duration),
+                                   bg=BAR_BG, fg=FG, font=(MONO, 10))
+        self.time_label.pack(side="left", padx=(14, 0))
 
         self.end_var = tk.BooleanVar(value=False)
         self.loop_var = tk.BooleanVar(value=False)
@@ -408,13 +445,15 @@ class Player(object):
                             highlightthickness=0, bd=0, sliderrelief="flat",
                             sliderlength=14, width=8, activebackground=ACCENT)
         self.vol.set(100)
-        self.vol.pack(side="right", padx=(6, 12))
+        self.vol.pack(side="right", padx=(6, 8))
 
         tk.Label(row, text="音量", bg=BAR_BG, fg=DIM,
                  font=(FONT, 9)).pack(side="right")
 
-        for sp in reversed(SPEEDS):
-            self._speed_chip(row, sp).pack(side="right", padx=2)
+        tk.Frame(row, width=1, height=20, bg=TRACK).pack(side="right", padx=(0, 12))
+
+        for sp in SPEEDS:
+            self._speed_chip(row, sp).pack(side="left", padx=(3, 0))
 
         note = ""
         if not self.audio.available():
@@ -440,14 +479,15 @@ class Player(object):
     def _speed_chip(self, parent, speed):
         text = ("%gx" % speed)
         c, box, label = self._chip(
-            parent, text, lambda s=speed: self._set_speed(s), 46, 26)
+            parent, text, lambda s=speed: self._set_speed(s), 52, 26)
         self._chips.append((speed, c, box, label))
         return c
 
     def _paint_speeds(self):
         for speed, c, box, label in self._chips:
             on = abs(self.speed - speed) < 1e-6
-            c.itemconfigure(box, fill=(ACCENT if on else CHIP_BG))
+            c.itemconfigure(box, fill=(ACCENT if on else CHIP_BG),
+                            outline=(ACCENT if on else "#2F3945"))
             c.itemconfigure(label, fill=("#FFFFFF" if on else FG))
 
     def _toggle_chip(self, parent, text, var, cmd, w=52):
@@ -461,7 +501,9 @@ class Player(object):
 
     def _paint_toggles(self):
         for c, box, var in self._togs:
-            c.itemconfigure(box, fill=(ACCENT if var.get() else CHIP_BG))
+            on = bool(var.get())
+            c.itemconfigure(box, fill=(ACCENT if on else CHIP_BG),
+                            outline=(ACCENT if on else "#2F3945"))
 
     # ---------- 帧 ----------
     def _fit_size(self):
@@ -505,19 +547,21 @@ class Player(object):
     def _draw_progress(self, t):
         c = self.pb
         W = c.winfo_width() or 600
-        H = 18
+        H = 22
         mid = H / 2.0
         c.delete("all")
-        c.create_line(0, mid, W, mid, fill=TRACK, width=4)
+        round_rect(c, 2, mid - 3, W - 2, mid + 3, 3, fill=TRACK, outline="")
         frac = 0.0 if not self.duration else min(1.0, max(0.0, t / self.duration))
-        x = W * frac
-        if frac > 0:
-            c.create_line(0, mid, x, mid, fill=ACCENT, width=4)
-        c.create_oval(x - 5, mid - 5, x + 5, mid + 5, fill=FG, outline="")
+        x = 2 + (W - 4) * frac
+        if frac > 0.004:
+            round_rect(c, 2, mid - 3, x, mid + 3, 3, fill=ACCENT, outline="")
+        c.create_oval(x - 6, mid - 6, x + 6, mid + 6, fill=FG, outline="")
+        c.create_oval(x - 2, mid - 2, x + 2, mid + 2, fill=ACCENT, outline="")
 
     def _update_bar(self, t):
         self._draw_progress(t)
-        self.time_label.configure(text="%.1f / %.1f s" % (t, self.duration))
+        self.time_label.configure(
+            text="%s / %s" % (fmt_time(t), fmt_time(self.duration)))
 
     # ---------- 时钟 ----------
     def elapsed(self):
@@ -628,20 +672,22 @@ class Player(object):
     # ---------- 进度条与交互 ----------
     def _pb_time(self, event):
         W = self.pb.winfo_width() or 600
-        frac = min(1.0, max(0.0, float(event.x) / W))
+        frac = min(1.0, max(0.0, (float(event.x) - 2.0) / max(1.0, W - 4.0)))
         return frac * self.duration
 
     def _pb_press(self, event):
         self._dragging = True
         t = self._pb_time(event)
         self._draw_progress(t)
-        self.time_label.configure(text="%.1f / %.1f s" % (t, self.duration))
+        self.time_label.configure(
+            text="%s / %s" % (fmt_time(t), fmt_time(self.duration)))
         return "break"
 
     def _pb_drag(self, event):
         t = self._pb_time(event)
         self._draw_progress(t)
-        self.time_label.configure(text="%.1f / %.1f s" % (t, self.duration))
+        self.time_label.configure(
+            text="%s / %s" % (fmt_time(t), fmt_time(self.duration)))
         return "break"
 
     def _pb_release(self, event):
@@ -738,7 +784,7 @@ def open_path(path):
         root.title(os.path.basename(path) + "  —  MTB")
         root.configure(bg=BG)
         root.minsize(320, 240)
-        label = tk.Label(root, bg="#0B0D10", bd=0, highlightthickness=0)
+        label = tk.Label(root, bg=CANVAS_BG, bd=0, highlightthickness=0)
         label.pack(fill="both", expand=True)
         src = Image.fromarray(decode_image(blob))
         w0, h0 = src.size
@@ -779,18 +825,24 @@ def open_path(path):
     root.title(name)
     root.configure(bg=BG)
 
-    splash = tk.Frame(root, bg=BG)
-    splash.pack(fill="both", expand=True)
-    hint = tk.Label(splash, text="正在解码…", bg=BG, fg=FG,
-                    font=("Microsoft YaHei", 12))
-    hint.pack(pady=(20, 8))
-    bar = tk.Canvas(splash, height=10, bg="#2B3039", highlightthickness=0)
-    bar.pack(fill="x", padx=32)
-    fill = bar.create_rectangle(0, 0, 0, 10, fill=ACCENT, width=0)
-    pct = tk.Label(splash, text="0%", bg=BG, fg="#9BA3AE")
-    pct.pack(pady=(6, 20))
-    preview = tk.Label(splash, bg=BG, bd=0, highlightthickness=0)
-    preview.pack(expand=True, pady=(0, 12))
+    # 默认静默启动：先把窗口藏住，解码走完再露出来，中间不显示任何提示。
+    want_splash = bool(os.environ.get("MTCODEC_VIEWER_SPLASH", ""))
+    splash = hint = bar = fill = pct = preview = None
+    if want_splash:
+        splash = tk.Frame(root, bg=BG)
+        splash.pack(fill="both", expand=True)
+        hint = tk.Label(splash, text="正在解码…", bg=BG, fg=FG,
+                        font=("Microsoft YaHei", 12))
+        hint.pack(pady=(20, 8))
+        bar = tk.Canvas(splash, height=10, bg="#2B3039", highlightthickness=0)
+        bar.pack(fill="x", padx=32)
+        fill = bar.create_rectangle(0, 0, 0, 10, fill=ACCENT, width=0)
+        pct = tk.Label(splash, text="0%", bg=BG, fg="#9BA3AE")
+        pct.pack(pady=(6, 20))
+        preview = tk.Label(splash, bg=BG, bd=0, highlightthickness=0)
+        preview.pack(expand=True, pady=(0, 12))
+    else:
+        root.withdraw()
     root.bind("<Escape>", lambda e: root.destroy())
 
     state = {"cur": 0, "total": 0, "frames": None, "audio": b"",
@@ -819,12 +871,16 @@ def open_path(path):
     th.start()
 
     def draw_bar(fraction):
+        if bar is None:
+            return
         width = bar.winfo_width()
         if width <= 1:
             width = 560
         bar.coords(fill, 0, 0, int(width * min(1.0, max(0.0, fraction))), 10)
 
     def draw_preview(arr):
+        if preview is None:
+            return
         thumb = Image.fromarray(arr)
         target = 360
         if thumb.width > target:
@@ -838,35 +894,43 @@ def open_path(path):
     def poll():
         if state["err"] is not None:
             try:
-                splash.destroy()
+                if splash is not None:
+                    splash.destroy()
             except Exception:
                 pass
             messagebox.showerror("MTB / MTC", str(state["err"]))
             root.destroy()
             return
         if state["frames"] is None:
-            cur = state["cur"]
-            total = state["total"] or 0
-            fraction = (cur / float(total)) if total else 0.0
-            hint.configure(text="正在解码 %d / %d 帧" % (cur, total))
-            pct.configure(text="%d%%" % int(100.0 * fraction))
-            draw_bar(fraction)
-            arr = state.get("frame")
-            if arr is not None and arr is not state["shown"]:
-                state["shown"] = arr
-                try:
-                    draw_preview(arr)
-                except Exception:
-                    pass
+            if hint is not None:
+                cur = state["cur"]
+                total = state["total"] or 0
+                fraction = (cur / float(total)) if total else 0.0
+                hint.configure(text="正在解码 %d / %d 帧" % (cur, total))
+                pct.configure(text="%d%%" % int(100.0 * fraction))
+                draw_bar(fraction)
+                arr = state.get("frame")
+                if arr is not None and arr is not state["shown"]:
+                    state["shown"] = arr
+                    try:
+                        draw_preview(arr)
+                    except Exception:
+                        pass
             root.after(250, poll)
             return
-        draw_bar(1.0)
-        pct.configure(text="100%")
+        if splash is not None:
+            draw_bar(1.0)
+            pct.configure(text="100%")
+            try:
+                splash.destroy()
+            except Exception:
+                pass
+        player = Player(root, state["frames"], state["fps"], state["audio"], name)
         try:
-            splash.destroy()
+            root.deiconify()
+            root.lift()
         except Exception:
             pass
-        player = Player(root, state["frames"], state["fps"], state["audio"], name)
         if auto > 0:
             used = (time.monotonic() - t_app) * 1000.0
             root.after(int(max(300, auto - used)), player.close)
