@@ -1,5 +1,6 @@
 import itertools
 import struct
+from concurrent.futures import ThreadPoolExecutor
 
 import numpy as np
 
@@ -18,6 +19,9 @@ VHDR2 = struct.Struct("<4sBBBBHHII")
 
 SCENE_CUT_SAD = 24.0
 DEFAULT_FPS = 24.0
+
+# 三个平面彼此独立，交给 Rust 后 GIL 已释放，可以真并行跑。
+_POOL = ThreadPoolExecutor(max_workers=3, thread_name_prefix="mtc-enc")
 
 
 def _prep_frame(frame, mult, subsample):
@@ -151,13 +155,17 @@ def encode_video(frames, quality=85, subsample="420", gop=12, collect=None,
     m = Model(3)
     mm = ModeModel(3)
     fe = fastenc.PlaneEncoder(m, mm, 3) if fastenc.available() else None
+    fprep = fastenc.prep_available()
     parts = []
     stats = []
     ref = None
     recon_frames = []
     count = 0
     for idx, frame in enumerate(itertools.chain((first,), it)):
-        planes = _prep_frame(frame, mult, flag)
+        if fprep:
+            planes = fastenc.prep_frame(frame, mult, flag)
+        else:
+            planes = _prep_frame(frame, mult, flag)
         intra = True
         if ref is not None and gop and idx % gop:
             if all(a.shape == b.shape for a, b in zip(planes, ref)):
@@ -165,19 +173,25 @@ def encode_video(frames, quality=85, subsample="420", gop=12, collect=None,
                 intra = sad > SCENE_CUT_SAD
         recon = []
         if fe is not None:
-            qzs = []
-            for i in range(3):
-                s = _plane_step(step, i)
-                if intra:
-                    qz = fastenc.quantize_plane(planes[i], s)
-                    qzs.append(qz)
-                    recon.append(fastenc.recon_plane(qz, s, None, color.CLIP[i]))
-                else:
-                    qz = fastenc.quantize_plane(planes[i], s, ref[i].astype(np.float64))
-                    qzs.append(qz)
+            steps = [_plane_step(step, i) for i in range(3)]
+            if intra:
+                qzs = list(_POOL.map(
+                    lambda i: fastenc.quantize_plane(planes[i], steps[i]), range(3)))
+                recon = list(_POOL.map(
+                    lambda i: fastenc.recon_plane(qzs[i], steps[i], None, color.CLIP[i]),
+                    range(3)))
+            else:
+                preds = [ref[i].astype(np.float64) for i in range(3)]
+                qzs = list(_POOL.map(
+                    lambda i: fastenc.quantize_plane(planes[i], steps[i], preds[i]),
+                    range(3)))
+                qz_effs = []
+                for qz in qzs:
                     flat = (qz == 0).all(axis=2)
-                    qz_eff = qz * (1 - flat[:, :, None])
-                    recon.append(fastenc.recon_plane(qz_eff, s, ref[i], color.CLIP[i]))
+                    qz_effs.append(qz * (1 - flat[:, :, None]))
+                recon = list(_POOL.map(
+                    lambda i: fastenc.recon_plane(qz_effs[i], steps[i], ref[i], color.CLIP[i]),
+                    range(3)))
             payload = fe.encode(qzs, not intra)
         else:
             enc = ac.Encoder()

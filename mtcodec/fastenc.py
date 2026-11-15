@@ -29,6 +29,18 @@ def _bind(lib):
         recon = lib.mt_enc_recon_plane
     except AttributeError:
         return None
+    prep = None
+    try:
+        prep = lib.mt_prep_frame
+    except AttributeError:
+        prep = None
+    if prep is not None:
+        prep.restype = ctypes.c_int
+        prep.argtypes = [
+            ctypes.c_void_p, ctypes.c_uint32, ctypes.c_uint32,
+            ctypes.c_uint32, ctypes.c_uint32, ctypes.c_uint32,
+            ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p,
+        ]
     new.restype = ctypes.c_void_p
     new.argtypes = []
     plane.restype = ctypes.c_int
@@ -53,7 +65,7 @@ def _bind(lib):
         ctypes.c_int, ctypes.c_int,
     ]
     return {"new": new, "plane": plane, "flush": flush, "free": free,
-            "quant": quant, "recon": recon}
+            "quant": quant, "recon": recon, "prep": prep}
 
 
 _ENC = _bind(_LIB)
@@ -61,6 +73,36 @@ _ENC = _bind(_LIB)
 
 def available():
     return _ENC is not None
+
+
+def prep_available():
+    return _ENC is not None and _ENC.get("prep") is not None
+
+
+def prep_frame(frame, mult, subsample):
+    """RGB uint8 frame -> padded YCoCg float64 planes, entirely in Rust."""
+    if not prep_available():
+        raise RuntimeError("native prep not available")
+    rgb = np.ascontiguousarray(frame, dtype=np.uint8)
+    h, w = rgb.shape[0], rgb.shape[1]
+    ph = -(-h // mult) * mult
+    pw = -(-w // mult) * mult
+    y = np.zeros((ph, pw), np.float64)
+    if subsample:
+        co = np.zeros((ph // 2, pw // 2), np.float64)
+        cg = np.zeros((ph // 2, pw // 2), np.float64)
+    else:
+        co = np.zeros((ph, pw), np.float64)
+        cg = np.zeros((ph, pw), np.float64)
+    rc = _ENC["prep"](
+        ctypes.c_void_p(rgb.ctypes.data), w, h, pw, ph, 1 if subsample else 0,
+        ctypes.c_void_p(y.ctypes.data),
+        ctypes.c_void_p(co.ctypes.data),
+        ctypes.c_void_p(cg.ctypes.data),
+    )
+    if rc != 0:
+        raise RuntimeError("native prep failed (rc=%d)" % rc)
+    return [y, co, cg]
 
 
 class PlaneEncoder:
