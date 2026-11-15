@@ -561,22 +561,33 @@ def open_path(path):
     name = os.path.basename(path)
     root.title(name)
     root.configure(bg=BG)
-    hint = tk.Label(root, text="正在解码…", bg=BG, fg=FG,
+
+    splash = tk.Frame(root, bg=BG)
+    splash.pack(fill="both", expand=True)
+    hint = tk.Label(splash, text="正在解码…", bg=BG, fg=FG,
                     font=("Microsoft YaHei", 12))
-    hint.pack(expand=True)
+    hint.pack(pady=(20, 8))
+    bar = tk.Canvas(splash, height=10, bg="#2B3039", highlightthickness=0)
+    bar.pack(fill="x", padx=32)
+    fill = bar.create_rectangle(0, 0, 0, 10, fill=ACCENT, width=0)
+    pct = tk.Label(splash, text="0%", bg=BG, fg="#9BA3AE")
+    pct.pack(pady=(6, 20))
+    preview = tk.Label(splash, bg=BG, bd=0, highlightthickness=0)
+    preview.pack(expand=True, pady=(0, 12))
     root.bind("<Escape>", lambda e: root.destroy())
 
     state = {"cur": 0, "total": 0, "frames": None, "audio": b"",
-             "fps": 0.0, "err": None}
+             "fps": 0.0, "err": None, "frame": None, "shown": None}
     t_app = time.monotonic()
 
     def worker():
         try:
             got = {}
 
-            def _prog(i, n):
+            def _prog(i, n, frame=None):
                 state["cur"] = i
                 state["total"] = n
+                state["frame"] = frame
 
             frames, _stats = decode_video(blob, collect=got, progress=_prog)
             state["frames"] = display_frames(frames)
@@ -590,21 +601,54 @@ def open_path(path):
     th.daemon = True
     th.start()
 
+    def draw_bar(fraction):
+        width = bar.winfo_width()
+        if width <= 1:
+            width = 560
+        bar.coords(fill, 0, 0, int(width * min(1.0, max(0.0, fraction))), 10)
+
+    def draw_preview(arr):
+        thumb = Image.fromarray(arr)
+        target = 360
+        if thumb.width > target:
+            thumb = thumb.resize(
+                (target, max(1, int(thumb.height * target / float(thumb.width)))),
+                Image.BILINEAR)
+        ph = ImageTk.PhotoImage(thumb)
+        preview.configure(image=ph)
+        preview.image = ph
+
     def poll():
         if state["err"] is not None:
             try:
-                hint.destroy()
+                splash.destroy()
             except Exception:
                 pass
             messagebox.showerror("MTB / MTC", str(state["err"]))
             root.destroy()
             return
         if state["frames"] is None:
-            hint.configure(text="正在解码 %d / %d 帧…" % (state["cur"],
-                                                        state["total"] or 0))
-            root.after(300, poll)
+            cur = state["cur"]
+            total = state["total"] or 0
+            fraction = (cur / float(total)) if total else 0.0
+            hint.configure(text="正在解码 %d / %d 帧" % (cur, total))
+            pct.configure(text="%d%%" % int(100.0 * fraction))
+            draw_bar(fraction)
+            arr = state.get("frame")
+            if arr is not None and arr is not state["shown"]:
+                state["shown"] = arr
+                try:
+                    draw_preview(arr)
+                except Exception:
+                    pass
+            root.after(250, poll)
             return
-        hint.destroy()
+        draw_bar(1.0)
+        pct.configure(text="100%")
+        try:
+            splash.destroy()
+        except Exception:
+            pass
         player = Player(root, state["frames"], state["fps"], state["audio"], name)
         if auto > 0:
             used = (time.monotonic() - t_app) * 1000.0

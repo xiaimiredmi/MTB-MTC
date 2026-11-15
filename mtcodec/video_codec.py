@@ -229,7 +229,7 @@ def decode_video(data, collect=None, progress=None):
         stats.append({"frame": len(frames) - 1, "type": "i" if intra else "p", "bytes": size + 5})
         ref = recon
         if progress is not None:
-            progress(len(frames), nframes)
+            progress(len(frames), nframes, frames[-1])
     if collect is not None:
         collect["stats"] = stats
         collect["audio"] = audio

@@ -228,14 +228,26 @@ just the file name. The bottom bar only carries playback controls.
 | Seek | drag the bar, or **← / →** (one second per press) |
 | Speed | 0.5× / 1× / 1.5× / 2× in the speed menu |
 | Volume | 0–100 slider, or **↑ / ↓** |
-| Loop | tick 循环 |
-| Close when finished | tick 播完关闭 |
+| Loop | tick "Loop" |
+| Close when finished | tick "Close when done" |
 | Close the window | **Esc** |
 
 Speed and volume are applied to the embedded PCM itself: samples are resampled
 and scaled in numpy, written to a temporary WAV and handed to the system player,
 so no extra audio library is needed. The play clock is monotonic and scheduled
 to the next frame boundary, so a long clip keeps its pace instead of drifting.
+
+Opening a clip never leaves the window blank: it shows a progress bar, a
+percentage, and the frame being decoded, and once decoding ends that same
+window becomes the player — the bar hands over to the playback seek bar.
+Decoding in pure Python costs a few hundred milliseconds per frame, so size and
+frame count decide the wait (`720p / 12 fps`, 120 frames: about 69 s;
+`360p` with the same frame count: about 27 s). For a short, smooth demo, pick
+frames = seconds × fps:
+
+```powershell
+python -m mtcodec convert in.mp4 in.mtc --size 360p --fps 30 --max-frames 300 --gop 30
+```
 
 Windows 10/11 refuse to let a program silently become the default handler, so
 registration only puts MTB/MTC into the "Open with" list with the red M (image)

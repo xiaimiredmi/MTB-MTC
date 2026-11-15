@@ -17,6 +17,10 @@ All notable changes to this project. Format based on
   with numpy, written to a temporary WAV and handed to the OS player
   (`winsound` on Windows, `aplay` on Linux, `afplay` on macOS), so speed and
   gain need no extra dependency (no pygame, no sounddevice).
+* **Live decode progress bar.** Opening a clip shows a progress bar, a
+  percentage, and the frame currently being decoded; when decoding finishes
+  that same window becomes the player, so the bar hands over to the playback
+  seek bar. `decode_video` gained a `progress(i, nframes, frame)` callback.
 
 ### Changed
 
@@ -122,6 +126,9 @@ All notable changes to this project. Format based on
 * **真正的音频变速与音量。** 内嵌 PCM 用 numpy 重采样并做增益，写成临时 WAV
   交给系统播放器（Windows 用 `winsound`，Linux 用 `aplay`，macOS 用 `afplay`），
   所以变速和音量不需要 pygame / sounddevice 这类额外依赖。
+* **解码进度条。** 打开片子时窗口里就是一根进度条加百分比，还会显示正在解码的
+  那一帧；解码完成后同一个窗口直接变成播放器，这根进度条交给播放进度条接着用。
+  `decode_video` 新增 `progress(i, nframes, frame)` 回调。
 
 ### 变更
 
