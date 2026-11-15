@@ -12,7 +12,7 @@ TOP = "MTB-MTC-v1.2.1"
 OUT = os.path.join(ROOT, "release", TOP + ".zip")
 
 SKIP_DIRS = {"__pycache__", "_shots", "build", "dist", "release", ".git",
-             ".venv", "venv", "node_modules"}
+             ".venv", "venv", "node_modules", "target"}
 SKIP_EXT = {".pyc", ".pyo", ".log", ".exe", ".zip"}
 SKIP_NAMES = {"Thumbs.db", "desktop.ini", ".DS_Store"}
 KEEP_ROOT_TXT = {"打包与安装说明.txt"}
