@@ -1,4 +1,5 @@
 import itertools
+import os
 import struct
 from concurrent.futures import ThreadPoolExecutor
 
@@ -27,10 +28,11 @@ VERSIONS_HEAD2 = (2, 3, 4)
 
 SCENE_CUT_SAD = 24.0
 DEFAULT_FPS = 24.0
-# 关掉这一项就退回旧的同位预测。实测块级 ME 在这类素材上只省 3.5%
-# 体积，PSNR 反而掉 1.7 dB，编码还慢 4.8 倍，所以默认关闭，代码留作
-# 以后换成原生实现时参考。
-ME_ON = False
+# 关掉这一项就退回旧的同位预测。打开后走两级搜索：1/4 分辨率粗搜，
+# 再回全分辨率验证最优候选和零位移。实测 24 帧 1080p：体积 211→170
+# KB/帧，但 PSNR 掉 2.0 dB、编码慢 3.6 倍，所以默认关闭，用
+# 环境变量 MTCODEC_ME=1 打开。
+ME_ON = os.environ.get("MTCODEC_ME") == "1"
 
 # 三个平面彼此独立，交给 Rust 后 GIL 已释放，可以真并行跑。
 _POOL = ThreadPoolExecutor(max_workers=3, thread_name_prefix="mtc-enc")
@@ -209,11 +211,12 @@ def _encode_h264(frames, quality, fps, audio, gop, collect, progress):
 
 
 def encode_video(frames, quality=85, subsample="420", gop=12, collect=None,
-                 fps=DEFAULT_FPS, audio=None, progress=None, codec="h264"):
+                 fps=DEFAULT_FPS, audio=None, progress=None, codec="dct"):
     """Encode a stream of frames.
 
-    ``codec`` selects the video backend: ``"h264"`` (the default, through
-    ffmpeg/x264) or ``"dct"`` (the original in-house transform coder).
+    ``codec`` selects the video backend: ``"dct"`` (the default, the
+    self-contained transform coder, no external dependencies) or ``"h264"``
+    (through ffmpeg/x264, roughly four times smaller).
 
     ``frames`` may be any iterable — a list, or a generator that pulls one
     frame at a time from ffmpeg. Only the frames still needed for prediction
