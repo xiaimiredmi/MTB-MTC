@@ -211,34 +211,51 @@ def encode_video(frames, quality=85, subsample="420", gop=12, collect=None,
     return head + b"".join(parts)
 
 
-def decode_video(data, collect=None, progress=None):
+def _parse_heads(data):
     if len(data) < VHDR.size:
         raise ValueError("truncated header")
     magic, ver, flag, quality, gop, w, h, nframes = VHDR.unpack(data[: VHDR.size])
     if magic != VID_MAGIC:
         raise ValueError("not an MTC stream")
-    audio = b""
-    fps = DEFAULT_FPS
-    if ver == 1:
-        pos = VHDR.size
-    elif ver == VID_VERSION:
+    info = {
+        "flag": flag, "quality": quality, "gop": gop,
+        "w": w, "h": h, "nframes": nframes,
+        "audio": b"", "fps": DEFAULT_FPS, "pos": VHDR.size,
+    }
+    if ver == VID_VERSION:
         magic, ver, flag, quality, gop, w, h, nframes, fps100 = VHDR2.unpack(data[: VHDR2.size])
         pos = VHDR2.size
         alen = struct.unpack("<I", data[pos : pos + 4])[0]
-        audio = data[pos + 4 : pos + 4 + alen]
-        pos += 4 + alen
-        fps = (fps100 / 100.0) if fps100 else DEFAULT_FPS
-    else:
+        info.update({
+            "flag": flag, "quality": quality, "gop": gop,
+            "w": w, "h": h, "nframes": nframes,
+            "audio": data[pos + 4 : pos + 4 + alen],
+            "fps": (fps100 / 100.0) if fps100 else DEFAULT_FPS,
+            "pos": pos + 4 + alen,
+        })
+    elif ver != 1:
         raise ValueError("unsupported version")
+    return info
 
-    step = tf.step_table(tf.quality_scale(quality))
+
+def iter_frames(data, progress=None, limit=None, stat_sink=None, head=None):
+    info = _parse_heads(data)
+    if head is not None:
+        head.update(info)
+    flag = info["flag"]
+    w = info["w"]
+    h = info["h"]
+    nframes = info["nframes"]
+    pos = info["pos"]
+    step = tf.step_table(tf.quality_scale(info["quality"]))
     m = Model(3)
     mm = ModeModel(3)
     fast = fastdec.PlaneDecoder(m, mm, 3) if fastdec.available() else None
     ref = None
-    frames = []
-    stats = []
-    while pos < len(data) and len(frames) < nframes:
+    n = 0
+    while pos < len(data) and n < nframes:
+        if limit is not None and n >= limit:
+            break
         ftype, size = struct.unpack("<BI", data[pos : pos + 5])
         pos += 5
         payload = data[pos : pos + size]
@@ -276,17 +293,32 @@ def decode_video(data, collect=None, progress=None):
                 else:
                     recon.append(_dec_inter(dec, mm, m, i, ref[i].shape, ref[i], s)[1])
         if fast is not None:
-            frames.append(fast.planes_to_rgb(recon, bool(flag), h, w))
+            rgb = fast.planes_to_rgb(recon, bool(flag), h, w)
         else:
-            frames.append(_planes_to_rgb(recon, bool(flag), h, w))
-        stats.append({"frame": len(frames) - 1, "type": "i" if intra else "p", "bytes": size + 5})
+            rgb = _planes_to_rgb(recon, bool(flag), h, w)
+        if stat_sink is not None:
+            stat_sink.append({"frame": n, "type": "i" if intra else "p", "bytes": size + 5})
         ref = recon
+        n += 1
         if progress is not None:
-            progress(len(frames), nframes, frames[-1])
+            progress(n, nframes, rgb)
+        yield rgb
+
+
+def decode_video(data, collect=None, progress=None, limit=None, on_frame=None):
+    head = {}
+    stats = []
+    frames = []
+    for rgb in iter_frames(data, progress=progress, limit=limit,
+                           stat_sink=stats, head=head):
+        if on_frame is not None:
+            on_frame(rgb)
+        else:
+            frames.append(rgb)
     if collect is not None:
         collect["stats"] = stats
-        collect["audio"] = audio
-        collect["fps"] = fps
+        collect["audio"] = head.get("audio", b"")
+        collect["fps"] = head.get("fps") or DEFAULT_FPS
     return frames, stats
 
 

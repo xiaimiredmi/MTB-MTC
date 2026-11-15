@@ -26,7 +26,7 @@ from PIL import Image, ImageTk
 from .image_codec import MAGIC as IMAGE_MAGIC
 from .image_codec import decode_image
 from .video_codec import VID_MAGIC as VIDEO_MAGIC
-from .video_codec import decode_video
+from .video_codec import _parse_heads, decode_video, iter_frames
 
 MAX_W = int(os.environ.get("MTCODEC_VIEWER_MAX_W", "0") or 0)
 MAX_H = int(os.environ.get("MTCODEC_VIEWER_MAX_H", "0") or 0)
@@ -322,12 +322,74 @@ class AudioPlayer(object):
             self._dir = None
 
 
+class StreamFrames(object):
+    """长片用：后台顺序解码，只留最近 window 帧，边解边放不爆内存。"""
+
+    def __init__(self, blob, total, shape, fps, audio, window=48,
+                 max_side=None, ready=6):
+        self.count = int(total)
+        self.shape = shape
+        self.fps = float(fps or DEFAULT_FPS)
+        self.audio = audio
+        self.window = int(window)
+        self.max_side = int(max_side or min(MAX_SIDE, 1280))
+        self._frames = {}
+        self._lock = threading.Lock()
+        self.decoded = 0
+        self.err = None
+        self._ready = int(ready)
+        self._blob = blob
+        self._th = threading.Thread(target=self._run)
+        self._th.daemon = True
+        self._th.start()
+
+    def _shrink(self, rgb):
+        side = self.max_side
+        h, w = rgb.shape[:2]
+        if side and max(h, w) > side:
+            s = side / float(max(h, w))
+            tw = max(1, int(round(w * s)))
+            th = max(1, int(round(h * s)))
+            return np.asarray(Image.fromarray(rgb).resize((tw, th), Image.BILINEAR))
+        return rgb
+
+    def _run(self):
+        try:
+            for i, rgb in enumerate(iter_frames(self._blob)):
+                arr = self._shrink(rgb)
+                with self._lock:
+                    self._frames[i] = arr
+                    self.decoded = i + 1
+                    cut = i - self.window
+                    if cut > 0:
+                        for k in [k for k in self._frames if k < cut]:
+                            del self._frames[k]
+        except Exception as exc:
+            self.err = exc
+
+    def ready(self, n=None):
+        with self._lock:
+            return self.decoded >= (self._ready if n is None else n)
+
+    def get(self, idx):
+        with self._lock:
+            return self._frames.get(int(idx))
+
+
 class Player(object):
     def __init__(self, root, frames, fps, audio_bytes, title):
         self.root = root
         self.frames = frames
-        self.count = len(frames)
-        self.fps = float(fps or DEFAULT_FPS)
+        if isinstance(frames, StreamFrames):
+            self._prov = frames
+            self.count = int(frames.count)
+            self._shape = frames.shape
+            self.fps = float(frames.fps or DEFAULT_FPS)
+        else:
+            self._prov = None
+            self.count = len(frames)
+            self._shape = frames[0].shape[:2]
+            self.fps = float(fps or DEFAULT_FPS)
         if self.fps <= 0:
             self.fps = DEFAULT_FPS
         self.duration = self.count / self.fps
@@ -382,7 +444,7 @@ class Player(object):
         self._togs = []
         self._cur = 0
 
-        hf, wf = self.frames[0].shape[:2]
+        hf, wf = self._shape
         try:
             sw = min(max(840, wf + 40), 1240)
             sh = int(round(sw * hf / float(wf))) + 138
@@ -509,7 +571,7 @@ class Player(object):
     def _fit_size(self):
         ax = self.image_label.winfo_width()
         ay = self.image_label.winfo_height()
-        h0, w0 = self.frames[0].shape[:2]
+        h0, w0 = self._shape
         if ax <= 8 or ay <= 8:
             return (w0, h0)
         s = min(ax / float(w0), ay / float(h0))
@@ -519,7 +581,13 @@ class Player(object):
         key = (idx, size)
         ph = self._cache.get(key)
         if ph is None:
-            img = Image.fromarray(self.frames[idx])
+            if self._prov is not None:
+                arr = self._prov.get(idx)
+            else:
+                arr = self.frames[idx]
+            if arr is None:
+                return None
+            img = Image.fromarray(arr)
             if size and img.size != size:
                 img = img.resize(size, Image.LANCZOS)
             ph = ImageTk.PhotoImage(img)
@@ -532,10 +600,14 @@ class Player(object):
 
     def show(self, idx):
         if self.count == 0:
-            return
+            return False
         idx = int(max(0, min(self.count - 1, idx)))
+        ph = self._photo(idx, self._fit_size())
+        if ph is None:
+            return False
         self._cur = idx
-        self.image_label.configure(image=self._photo(idx, self._fit_size()))
+        self.image_label.configure(image=ph)
+        return True
 
     def _on_canvas_resize(self, _event=None):
         if self.count:
@@ -583,7 +655,13 @@ class Player(object):
             self._on_end()
             return
         idx = int(t * self.fps)
-        self.show(idx)
+        if not self.show(idx):
+            back = max(0.0, (idx - 1) / float(self.fps))
+            self.base_pos = back
+            self.base_wall = time.monotonic()
+            self._update_bar(back)
+            self._schedule(0.12)
+            return
         self._update_bar(t)
         nxt = (idx + 1) / self.fps
         delay = (nxt - t) / self.speed
@@ -849,6 +927,16 @@ def open_path(path):
              "fps": 0.0, "err": None, "frame": None, "shown": None}
     t_app = time.monotonic()
 
+    # 长片走流式：边解码边播放，内存恒定；短片照旧全解，拖到哪都即时。
+    head = _parse_heads(blob)
+    total_n = int(head.get("nframes") or 0)
+    vfps = float(head.get("fps") or DEFAULT_FPS)
+    vaudio = head.get("audio") or b""
+    stream = None
+    pix = total_n * int(head.get("w") or 0) * int(head.get("h") or 0)
+    if pix > 900000000:
+        stream = StreamFrames(blob, total_n, (head["h"], head["w"]), vfps, vaudio)
+
     def worker():
         try:
             got = {}
@@ -866,9 +954,11 @@ def open_path(path):
         except Exception as exc:
             state["err"] = exc
 
-    th = threading.Thread(target=worker)
-    th.daemon = True
-    th.start()
+    th = None
+    if stream is None:
+        th = threading.Thread(target=worker)
+        th.daemon = True
+        th.start()
 
     def draw_bar(fraction):
         if bar is None:
@@ -892,6 +982,29 @@ def open_path(path):
         preview.image = ph
 
     def poll():
+        if stream is not None:
+            if stream.err is not None:
+                try:
+                    if splash is not None:
+                        splash.destroy()
+                except Exception:
+                    pass
+                messagebox.showerror("MTB / MTC", str(stream.err))
+                root.destroy()
+                return
+            if not stream.ready():
+                root.after(80, poll)
+                return
+            player = Player(root, stream, vfps, vaudio, name)
+            try:
+                root.deiconify()
+                root.lift()
+            except Exception:
+                pass
+            if auto > 0:
+                used = (time.monotonic() - t_app) * 1000.0
+                root.after(int(max(300, auto - used)), player.close)
+            return
         if state["err"] is not None:
             try:
                 if splash is not None:

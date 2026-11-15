@@ -10,6 +10,16 @@ All notable changes to this project. Format based on
 
 ### Added
 
+* **Streaming playback for long clips.** The viewer used to decode the whole
+  container into RAM before showing anything: a 1.84 GB, 5696-frame 1080p `.mtc`
+  needed ~35 GB of RGB buffers, so it spent minutes decoding and then died in a
+  `MemoryError` dialog. `video_codec.iter_frames()` is now a generator that yields
+  one frame at a time, and `viewer.StreamFrames` runs it on a background thread
+  while keeping only the most recent 48 frames (a sliding window). `Player` reads
+  frames from that window, shows the previous frame when the plan-ahead frame is
+  not ready yet, and retries shortly instead of spinning the clock. Opening the
+  same 1.84 GB file now reaches the first frame in **~2 s** with flat memory, and
+  playback speed is bounded by decode speed only.
 * **Native Rust encoder.** Encoding used to be the slow half of the codec: a
   4K frame took 11.2 s and a 1080p frame 3.18 s in pure Python, i.e. 45 minutes
   for 240 4K frames and roughly 22 hours for a 14-minute 1080p clip. The
