@@ -97,7 +97,8 @@ for rel in need:
 text_bytes = 0
 bin_bytes = 0
 for dirpath, dirnames, filenames in os.walk(ROOT):
-    dirnames[:] = [d for d in dirnames if d != "__pycache__"]
+    dirnames[:] = [d for d in dirnames
+                   if d not in ("__pycache__", "dist", "build", "release", ".git")]
     for f in filenames:
         sz = os.path.getsize(os.path.join(dirpath, f))
         if sz > 10 * 1024 * 1024:
