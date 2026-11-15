@@ -115,6 +115,26 @@ with a BOM (`打包与安装说明.txt`) will still be stored as-is; that is fin
 
 ## 4. Create the remote
 
+### GitHub Desktop route (no command line)
+
+The folder already has `.git` and one commit, so Desktop treats it as a real
+repository:
+
+1. `File → Add local repository` (文件 → 添加本地仓库), choose `D:\MTB-MTC`.
+   If Desktop was already open on the folder and showed *"this folder does not
+   appear to be a valid Git repository"*, close that dialog and open it again —
+   it cached the earlier state.
+2. The repository appears on the left with branch `main` and "no local changes".
+3. Click **Publish repository** (发布仓库) in the top bar → choose **Public** →
+   keep the name `MTB-MTC` → Publish.
+
+That creates the GitHub repository, adds `origin` and pushes `main` in one step.
+Then make the first release: `Releases → Draft a new release` on GitHub, tag
+`v1.2.0`, drag `release/MTBViewer.exe` and the two zips into the attachments box.
+
+Note: Desktop shows "Publish repository" only for a repo with no remote. If you
+already published once, use **Repository → Push** after committing.
+
 ### Browser route
 
 1. <https://github.com/new>
@@ -380,6 +400,23 @@ git config core.autocrlf true
 会原样存储，没有影响。
 
 ## 4. 创建远程仓库
+
+### GitHub Desktop 路线（不用命令行）
+
+目录里已经有 `.git` 和一个提交，Desktop 会把它当成正常仓库：
+
+1. `文件 → 添加本地仓库`，选中 `D:\MTB-MTC`。如果 Desktop 还停在那句"这个文件夹
+   似乎不是一个有效的 Git 仓库"的弹窗上，先关掉再重新打开——它缓存了旧状态。
+2. 左侧出现仓库，分支 `main`，"本地没有发生变化"。
+3. 点顶栏 **发布仓库（Publish repository）** → 选 **Public** → 名字保持
+   `MTB-MTC` → 发布。
+
+这一步就把 GitHub 仓库建好、加上 `origin`、把 `main` 推上去。然后到 GitHub 上
+`Releases → Draft a new release`，tag 填 `v1.2.0`，把 `release/MTBViewer.exe`
+和两个 zip 拖进附件框。
+
+注意：Desktop 只在"还没有远程"时显示"发布仓库"。发布过之后再提交，用
+**Repository → Push**。
 
 ### 网页法
 
