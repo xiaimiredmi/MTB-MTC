@@ -525,7 +525,7 @@ class Player(object):
             sw = min(max(880, wf + 40), 1120)
             sh = int(round(sw * hf / float(wf))) + 150
             sw = min(sw, self.root.winfo_screenwidth() - 80)
-            sh = min(sh, self.root.winfo_screenheight() - 100)
+            sh = min(sh, self.root.winfo_screenheight() - 130)
             self.root.geometry("%dx%d" % (sw, sh))
         except Exception:
             pass
