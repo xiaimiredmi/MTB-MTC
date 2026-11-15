@@ -28,17 +28,24 @@ from .image_codec import decode_image
 from .video_codec import VID_MAGIC as VIDEO_MAGIC
 from .video_codec import decode_video
 
-MAX_W = int(os.environ.get("MTCODEC_VIEWER_MAX_W", "960") or 960)
-MAX_H = int(os.environ.get("MTCODEC_VIEWER_MAX_H", "720") or 720)
+MAX_W = int(os.environ.get("MTCODEC_VIEWER_MAX_W", "0") or 0)
+MAX_H = int(os.environ.get("MTCODEC_VIEWER_MAX_H", "0") or 0)
+MAX_SIDE = int(os.environ.get("MTCODEC_VIEWER_MAX_SIDE", "1600") or 1600)
 DEFAULT_FPS = 24.0
-CACHE_LIMIT = 32
+CACHE_LIMIT = 24
 
-BG = "#15181D"
+BG = "#101317"
 FG = "#E8E6E1"
-BAR_BG = "#1E2229"
+DIM = "#8F98A4"
+BAR_BG = "#171B21"
+CHIP_BG = "#20242C"
+CHIP_HI = "#2B3240"
+TRACK = "#2A303A"
 ACCENT = "#0E717C"
+FONT = "Microsoft YaHei"
+MONO = "Consolas"
 
-SPEEDS = ("0.5x", "1x", "1.5x", "2x")
+SPEEDS = (0.5, 1.0, 1.5, 2.0)
 
 
 def sniff(blob):
@@ -60,27 +67,32 @@ def read_container(path):
 
 
 def display_frames(frames):
-    """把解码出来的帧统一缩到显示尺寸，降低内存与每帧贴图开销。"""
+    """只在帧超过 MAX_SIDE 时做一次高质量缩放，其余保留原始分辨率。"""
+    if not frames:
+        return frames
     h0, w0 = frames[0].shape[:2]
-    scale = min(MAX_W / float(w0), MAX_H / float(h0), 1.0)
+    cap = MAX_SIDE if MAX_SIDE > 0 else max(w0, h0)
+    if MAX_W and MAX_H:
+        cap = min(cap, max(MAX_W, MAX_H))
+    scale = min(cap / float(max(w0, h0)), 1.0)
+    if scale >= 1.0:
+        return list(frames)
     w = max(1, int(round(w0 * scale)))
     h = max(1, int(round(h0 * scale)))
-    out = []
-    for arr in frames:
-        img = Image.fromarray(arr)
-        if img.size != (w, h):
-            img = img.resize((w, h), Image.BILINEAR)
-        out.append(np.asarray(img))
-    return out
+    return [np.asarray(Image.fromarray(arr).resize((w, h), Image.LANCZOS))
+            for arr in frames]
 
 
 class AudioTrack(object):
-    """44.1k / 16bit PCM 音轨，可按任意起点、倍速、音量生成 WAV 片段。"""
+    """44.1k / 16bit PCM 音轨。倍速用 ffmpeg 的 atempo 滤镜做变速不变调。"""
 
     def __init__(self, wav_bytes=b""):
         self.rate = 44100
         self.channels = 2
         self.samples = None
+        self._wav = wav_bytes
+        self._cache = {}
+        self._dir = None
         if not wav_bytes or len(wav_bytes) < 44:
             return
         try:
@@ -106,27 +118,89 @@ class AudioTrack(object):
             return 0.0
         return len(self.samples) / float(self.rate)
 
+    def stretched(self):
+        """是否能用 atempo 做到不变调。"""
+        return bool(FFMPEG) and self.ok()
+
+    def _workdir(self):
+        if self._dir is None:
+            self._dir = tempfile.mkdtemp(prefix="mtcodec_audio_")
+        return self._dir
+
+    def _atempo(self, speed):
+        """整条音轨变速不变调，返回 wav 路径；不可用时返回 None。"""
+        if not FFMPEG or not self._wav:
+            return None
+        tag = ("%.3f" % speed).replace(".", "_")
+        out = os.path.join(self._workdir(), "tempo_%s.wav" % tag)
+        if os.path.isfile(out) and os.path.getsize(out) > 44:
+            return out
+        src = os.path.join(self._workdir(), "src.wav")
+        if not os.path.isfile(src):
+            with open(src, "wb") as f:
+                f.write(self._wav)
+        cmd = [FFMPEG, "-hide_banner", "-loglevel", "error", "-y",
+               "-i", src, "-filter:a", "atempo=%.4f" % speed,
+               "-ac", str(self.channels), "-ar", str(self.rate),
+               "-f", "wav", out]
+        try:
+            proc = subprocess.run(cmd, stdout=subprocess.DEVNULL,
+                                  stderr=subprocess.DEVNULL, timeout=600)
+        except Exception:
+            return None
+        if proc.returncode != 0 or not os.path.isfile(out):
+            return None
+        return out
+
+    def _linear(self, speed):
+        """没有 ffmpeg 时的回退：线性插值，音调会跟着变。"""
+        n = len(self.samples)
+        count = max(1, int(round(n / float(speed))))
+        pos = np.linspace(0, n - 1, count)
+        base = np.floor(pos).astype(np.int64)
+        nxt = np.clip(base + 1, 0, n - 1)
+        frac = (pos - base).astype(np.float32)
+        if self.samples.ndim == 2:
+            frac = frac[:, None]
+        a = self.samples[base].astype(np.float32)
+        b = self.samples[nxt].astype(np.float32)
+        return a + (b - a) * frac
+
+    def _stretched(self, speed):
+        key = round(float(speed), 3)
+        got = self._cache.get(key)
+        if got is not None:
+            return got
+        if abs(key - 1.0) < 1e-6:
+            arr = self.samples.astype(np.float32)
+        else:
+            arr = None
+            path = self._atempo(key)
+            if path:
+                try:
+                    with wave.open(path, "rb") as wf:
+                        raw = wf.readframes(wf.getnframes())
+                    got = np.frombuffer(raw, dtype="<i2")
+                    if self.channels > 1:
+                        got = got.reshape(-1, self.channels)
+                    arr = got.astype(np.float32)
+                except Exception:
+                    arr = None
+            if arr is None:
+                arr = self._linear(key)
+        self._cache[key] = arr
+        return arr
+
     def build(self, start_sec=0.0, speed=1.0, gain=1.0):
         if not self.ok():
             return b""
-        n = len(self.samples)
-        i0 = int(max(0.0, start_sec) * self.rate)
-        if i0 >= n:
+        arr = self._stretched(speed)
+        if arr is None or len(arr) == 0:
             return b""
-        seg = self.samples[i0:]
-        if speed and abs(speed - 1.0) > 1e-6:
-            count = max(1, int(round(len(seg) / float(speed))))
-            pos = np.linspace(0, len(seg) - 1, count)
-            base = np.floor(pos).astype(np.int64)
-            nxt = np.clip(base + 1, 0, len(seg) - 1)
-            frac = (pos - base).astype(np.float32)
-            if seg.ndim == 2:
-                frac = frac[:, None]
-            a = seg[base].astype(np.float32)
-            b = seg[nxt].astype(np.float32)
-            seg = a + (b - a) * frac
-        else:
-            seg = seg.astype(np.float32)
+        i0 = int(max(0.0, start_sec) * self.rate)
+        if i0 >= len(arr):
+            return b""
+        seg = arr[i0:]
         if gain is not None and abs(gain - 1.0) > 1e-6:
             seg = seg * float(gain)
         seg = np.clip(seg, -32768, 32767).astype("<i2")
@@ -138,6 +212,12 @@ class AudioTrack(object):
             wf.setframerate(self.rate)
             wf.writeframes(seg.tobytes())
         return buf.getvalue()
+
+    def cleanup(self):
+        self._cache = {}
+        if self._dir and os.path.isdir(self._dir):
+            shutil.rmtree(self._dir, ignore_errors=True)
+            self._dir = None
 
 
 class AudioPlayer(object):
