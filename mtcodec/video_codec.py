@@ -22,6 +22,9 @@ DEFAULT_FPS = 24.0
 
 # 三个平面彼此独立，交给 Rust 后 GIL 已释放，可以真并行跑。
 _POOL = ThreadPoolExecutor(max_workers=3, thread_name_prefix="mtc-enc")
+# 熵编码是单一比特流、只能一帧一帧串行；放后台线程，好让它与下一帧的
+# 预处理/量化/重建重叠。
+_ENT_POOL = ThreadPoolExecutor(max_workers=1, thread_name_prefix="mtc-ent")
 
 
 def _prep_frame(frame, mult, subsample):
@@ -161,6 +164,7 @@ def encode_video(frames, quality=85, subsample="420", gop=12, collect=None,
     ref = None
     recon_frames = []
     count = 0
+    pending = None  # (future, intra, idx) — 上一帧的熵编码在后台跑
     for idx, frame in enumerate(itertools.chain((first,), it)):
         if fprep:
             planes = fastenc.prep_frame(frame, mult, flag)
@@ -192,7 +196,14 @@ def encode_video(frames, quality=85, subsample="420", gop=12, collect=None,
                 recon = list(_POOL.map(
                     lambda i: fastenc.recon_plane(qz_effs[i], steps[i], ref[i], color.CLIP[i]),
                     range(3)))
-            payload = fe.encode(qzs, not intra)
+            if pending is not None:
+                fut, p_intra, p_idx = pending
+                payload = fut.result()
+                parts.append(struct.pack("<BI", 0 if p_intra else 1, len(payload)) + payload)
+                stats.append({"frame": p_idx, "type": "i" if p_intra else "p",
+                              "bytes": len(payload) + 5})
+                pending = None
+            pending = (_ENT_POOL.submit(fe.encode, qzs, not intra), intra, idx)
         else:
             enc = ac.Encoder()
             for i in range(3):
@@ -202,8 +213,9 @@ def encode_video(frames, quality=85, subsample="420", gop=12, collect=None,
                 else:
                     recon.append(_enc_inter(enc, mm, m, i, planes[i], ref[i], s)[1])
             payload = enc.flush()
-        parts.append(struct.pack("<BI", 0 if intra else 1, len(payload)) + payload)
-        stats.append({"frame": idx, "type": "i" if intra else "p", "bytes": len(payload) + 5})
+            parts.append(struct.pack("<BI", 0 if intra else 1, len(payload)) + payload)
+            stats.append({"frame": idx, "type": "i" if intra else "p",
+                          "bytes": len(payload) + 5})
         ref = recon
         count += 1
         if collect is not None:
@@ -213,6 +225,14 @@ def encode_video(frames, quality=85, subsample="420", gop=12, collect=None,
                 recon_frames.append(_planes_to_rgb(recon, bool(flag), h, w))
         if progress is not None and count % 100 == 0:
             progress(count)
+
+    if pending is not None:
+        fut, p_intra, p_idx = pending
+        payload = fut.result()
+        parts.append(struct.pack("<BI", 0 if p_intra else 1, len(payload)) + payload)
+        stats.append({"frame": p_idx, "type": "i" if p_intra else "p",
+                      "bytes": len(payload) + 5})
+        pending = None
 
     audio = audio or b""
     fps100 = int(round(float(fps) * 100)) if fps else 0
