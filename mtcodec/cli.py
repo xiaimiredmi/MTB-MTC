@@ -248,7 +248,11 @@ def cmd_open(args):
 
 
 def main(argv=None):
-    p = argparse.ArgumentParser(prog="mtcodec", description="MTB image / MTC video codec")
+    p = argparse.ArgumentParser(
+        prog="mtcodec",
+        description="MTB image / MTC video codec",
+        epilog="feedback: xiaomitv14@outlook.com  |  https://github.com/xiaimiredmi/MTB-MTC/issues",
+    )
     sub = p.add_subparsers(dest="cmd", required=True)
 
     e = sub.add_parser("encode", help="encode an image to .mtb")
