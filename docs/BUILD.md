@@ -57,11 +57,21 @@ Why each flag matters:
 | `--hidden-import PIL.ImageTk` | Pillow loads ImageTk lazily; without this the exe dies at first image |
 | `--noconfirm --clean` | reproducible builds, no stale cache prompts |
 
-Result on Windows 11 / Python 3.12: `dist\MTBViewer.exe`, about **29 MB**,
-cold start ~1.5 s (onefile has to unpack to a temp dir on every launch).
+Result on Windows 11 / Python 3.12: `dist\MTBViewer.exe`, about **30 MB**;
+a onefile launch unpacks numpy, Pillow and Tcl/Tk into `%TEMP%` first, which is
+the bulk of the startup cost.
 
-If you want a faster start, drop `--onefile`: the output becomes a folder
-(`dist\MTBViewer\`), starts in ~0.3 s, and is easier to code-sign. Ship it zipped.
+Use the wrapper instead of calling PyInstaller by hand:
+
+```bash
+python tools/build_exe.py            # onefile -> dist\MTBViewer.exe
+python tools/build_exe.py --onedir   # folder  -> dist\MTBViewer\MTBViewer.exe
+```
+
+Measured on the dev machine, same sample, start to close (both include a 1.2 s
+auto-close timer and the decode step): **onefile 6.1–9.2 s, onedir 4.1–6.1 s**.
+The folder build is also easier to code-sign and smaller to update: ship the
+onefile in releases, install the folder locally.
 
 `deploy/mtb_app.py` is the entry point: when Windows passes a file path, it opens
 that file; with no argument it shows the file picker.
@@ -79,7 +89,7 @@ M for images, blue `#1565C0` for video. No external assets required.
 ### File association
 
 ```bash
-python deploy/windows_register.py --exe "D:/MTB-MTC/release/MTBViewer.exe"
+python deploy/windows_register.py --exe "D:/MTB-MTC/release/viewer/MTBViewer.exe"
 python deploy/windows_register.py --unregister
 ```
 
@@ -359,11 +369,19 @@ python -m PyInstaller --noconfirm --clean --onefile --windowed
 | `--hidden-import PIL.ImageTk` | Pillow 延迟加载 ImageTk，漏了它程序在显示第一张图时崩 |
 | `--noconfirm --clean` | 可重复构建，不被缓存卡住 |
 
-Windows 11 / Python 3.12 实测：`dist\MTBViewer.exe`，约 **29 MB**，
-冷启动约 1.5 秒（onefile 每次启动都要解包到临时目录）。
+Windows 11 / Python 3.12 实测：`dist\MTBViewer.exe`，约 **30 MB**；onefile 每次
+启动都要先把 numpy、Pillow、Tcl/Tk 解包到 `%TEMP%`，这就是启动慢的大头。
 
-想启动更快就去掉 `--onefile`：输出变成目录 `dist\MTBViewer\`，启动约 0.3 秒，
-也更容易做代码签名。分发时打个压缩包即可。
+不要手敲 PyInstaller，直接用封装脚本：
+
+```bash
+python tools/build_exe.py            # onefile -> dist\MTBViewer.exe
+python tools/build_exe.py --onedir   # 目录版 -> dist\MTBViewer\MTBViewer.exe
+```
+
+本机同一样本从启动到关闭实测（都含 1.2 秒自动关闭与解码）：
+**onefile 6.1–9.2 秒，onedir 4.1–6.1 秒**。目录版还更好做代码签名、增量更新也小：
+发布给别人用 onefile，自己日常用目录版。
 
 `deploy/mtb_app.py` 是入口：Windows 传文件路径进来就打开那个文件，
 没有参数就弹文件选择框。
@@ -381,7 +399,7 @@ python tools/make_icons.py
 ### 文件关联
 
 ```bash
-python deploy/windows_register.py --exe "D:/MTB-MTC/release/MTBViewer.exe"
+python deploy/windows_register.py --exe "D:/MTB-MTC/release/viewer/MTBViewer.exe"
 python deploy/windows_register.py --unregister
 ```
 

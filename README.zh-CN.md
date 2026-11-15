@@ -207,12 +207,26 @@ io_bridge.export_mp4(解出来的帧, "输出.mp4", fps=12.0, wav_bytes=audio)
 
 ```bash
 python -m mtcodec open samples/photo_c.mtb
-python deploy/windows_register.py --exe "D:/MTB-MTC/release/MTBViewer.exe"
+python deploy/windows_register.py --exe "D:/MTB-MTC/release/viewer/MTBViewer.exe"
 python deploy/windows_register.py --unregister
 ```
 
 查看器故意**不显示任何技术指标**：没有帧号、没有帧率、没有 gop、没有字节数。
-单张图片就是单张图片，窗口标题只有文件名。空格暂停播放，Esc 关闭。
+单张图片就是单张图片，窗口标题只有文件名。底部只有一排播放控件。
+
+| 控件 | 用法 |
+| --- | --- |
+| 播放 / 暂停 | 按钮，或 **空格** |
+| 拖进度 | 拖动进度条，或 **← / →** 每次跳 1 秒 |
+| 倍速 | 倍速菜单里选 0.5× / 1× / 1.5× / 2× |
+| 音量 | 0–100 拖动条，或 **↑ / ↓** |
+| 循环 | 勾"循环" |
+| 播完关闭 | 勾"播完关闭" |
+| 关闭窗口 | **Esc** |
+
+倍速和音量直接作用在内嵌 PCM 上：numpy 重采样 + 增益，写成临时 WAV 交给系统
+播放器，所以不需要额外音频库。播放时钟用单调时钟排到下一帧边界，长片不会
+越播越慢。
 
 Windows 10/11 不允许程序静默把自己变成默认打开方式，所以注册只把
 MTB/MTC 加进"打开方式"列表，并配好红色 M（图片）与蓝色 M（视频）图标。
@@ -220,12 +234,18 @@ MTB/MTC 加进"打开方式"列表，并配好红色 M（图片）与蓝色 M（
 
 ---
 
-## 打包成单文件程序
+## 打包成可执行程序
 
 ```bash
 pip install pyinstaller
-python tools/build_exe.py          # 产出 dist/MTBViewer.exe，约 29 MB，无控制台
+python tools/build_exe.py            # onefile -> dist/MTBViewer.exe
+python tools/build_exe.py --onedir   # 目录版 -> dist/MTBViewer/MTBViewer.exe
 ```
+
+两个都是无控制台的窗口程序。**日常使用装目录版**：onefile 每次启动都要把
+numpy、Pillow、Tcl/Tk 解压到 `%TEMP%`，双击必然慢几秒。本机同一样本从启动到
+关闭：onefile 6.1–9.2 秒，onedir 4.1–6.1 秒。发布给别人用 onefile，自己用
+目录版。
 
 完整流程（PyInstaller、Nuitka、Linux 的 `.desktop`、macOS 的 `.app`、
 安卓的 Termux/Chaquopy）见 [docs/BUILD.md](docs/BUILD.md)。
@@ -237,8 +257,8 @@ python tools/build_exe.py          # 产出 dist/MTBViewer.exe，约 29 MB，无
 | 平台 | 跑源码 | 单文件 | 说明 |
 | --- | --- | --- | --- |
 | Windows 10/11 | 支持 | `MTBViewer.exe` | 支持文件关联和图标 |
-| Linux | 支持 | PyInstaller | 音频不响（winsound 是 Windows 专有） |
-| macOS | 支持 | PyInstaller `.app` | 同样不响；要用 python.org 的 Python（Homebrew 不带 Tk） |
+| Linux | 支持 | PyInstaller | 音频走 `aplay`，倍速音量照样能用 |
+| macOS | 支持 | PyInstaller `.app` | 音频走 `afplay`；要用 python.org 的 Python（Homebrew 不带 Tk） |
 | 安卓 | Termux / Chaquopy | — | Tk 必须换成原生控件 |
 
 鸿蒙与 iOS 明确不做：一个要学另一种语言，一个必须有苹果电脑才能编译。
@@ -250,11 +270,13 @@ python tools/build_exe.py          # 产出 dist/MTBViewer.exe，约 29 MB，无
 
 * **大图慢。** 7680×4320 编码 16.6 s；把一张小图放大到 8K 要 82 s。纯 Python 逐符号算术编码就是这个量级。
 * **音频不压缩。** 每秒 172 KB，在测试用的 `.mtc` 里占 24%–59%。
-* **音画只是粗同步。** 音频用系统播放器异步启动，没有逐帧时间戳。几秒钟没问题，长了会漂。
+* **音画是"位置对齐"，不是"逐样本对齐"。** 画面由 Tk 驱动，音频在每次拖动、
+  改倍速、改音量时按当前位置重新生成并重新起播，长片会漂几帧。要精确同步就导出 MP4。
 * **`.mtc` 没有透明。** 带透明的动图存成视频会丢透明（单帧用 `.mtb` 可保住）。
 * **APNG 的每帧时长会丢。** `.mtc` 是恒定帧率。
 * **视频要 ffmpeg。** 图片不需要。
-* **非 Windows 构建没有声音。** 画面能放，音频不响。
+* **音频要有系统播放器。** Windows 用 `winsound`；Linux/macOS 需要 `aplay` /
+  `afplay` 在 `PATH` 里。都没有时画面照放，只是不响。
 
 ---
 

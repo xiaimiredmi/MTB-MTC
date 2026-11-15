@@ -17,6 +17,7 @@ env/
 build_exe_log.txt
 release/*.exe
 release/*.zip
+release/viewer/
 MTB-MTC-encoder-v*.zip
 MTBViewer.exe
 

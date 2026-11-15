@@ -6,6 +6,31 @@ All notable changes to this project. Format based on
 
 ---
 
+## [1.2.1] — 2026-11-15
+
+### Added
+
+* **Full player controls.** Speed 0.5× / 1× / 1.5× / 2×, a draggable seek bar,
+  volume 0–100, loop, and close-when-finished. Space toggles play/pause, ←/→
+  seek one second, ↑/↓ change volume, Esc closes.
+* **Real audio speed and volume.** The embedded PCM is resampled and scaled
+  with numpy, written to a temporary WAV and handed to the OS player
+  (`winsound` on Windows, `aplay` on Linux, `afplay` on macOS), so speed and
+  gain need no extra dependency (no pygame, no sounddevice).
+
+### Changed
+
+* **Playback clock is monotonic.** Frame timing is derived from
+  `time.monotonic()` and scheduled to the next frame boundary, instead of
+  chaining a fixed `after(1000/fps)`, so a long clip no longer drifts slower
+  and slower.
+* **Lower memory, smoother painting.** Frames are scaled to at most 960×720
+  immediately after decoding and turned into `PhotoImage` lazily through a
+  32-frame LRU cache, instead of pre-building every full-size frame.
+* `tools/build_exe.py --onedir` builds a folder bundle. Measured on the dev
+  machine, start-to-close on the same sample: onefile 6.1–9.2 s, onedir
+  4.1–6.1 s (both include a 1.2 s auto-close timer plus the decode step).
+
 ## [1.2.0] — 2026-11-15
 
 ### Added
@@ -87,6 +112,25 @@ All notable changes to this project. Format based on
 ---
 
 # 中文
+
+## [1.2.1] — 2026-11-15
+
+### 新增
+
+* **完整播放控件。** 倍速 0.5× / 1× / 1.5× / 2×、可拖动进度条、音量 0–100、
+  循环播放、播完关闭。空格播放/暂停，←/→ 前后跳 1 秒，↑/↓ 调音量，Esc 关闭。
+* **真正的音频变速与音量。** 内嵌 PCM 用 numpy 重采样并做增益，写成临时 WAV
+  交给系统播放器（Windows 用 `winsound`，Linux 用 `aplay`，macOS 用 `afplay`），
+  所以变速和音量不需要 pygame / sounddevice 这类额外依赖。
+
+### 变更
+
+* **播放时钟改为单调时钟。** 帧时刻由 `time.monotonic()` 推出并排到下一帧边界，
+  不再用固定 `after(1000/fps)` 接力，长片不会越播越慢。
+* **内存更省、贴图更顺。** 解码后先把帧缩到不超过 960×720，再按需生成
+  `PhotoImage` 并做 32 帧 LRU 缓存，不再一次性预生成全部原尺寸帧。
+* `tools/build_exe.py --onedir` 可产出目录版。本机实测同一样本从启动到关闭：
+  onefile 6.1–9.2 秒，onedir 4.1–6.1 秒（都含 1.2 秒自动关闭与解码）。
 
 ## [1.2.0] — 2026-11-15
 

@@ -214,13 +214,28 @@ io_bridge.export_mp4(decoded_frames, "out.mp4", fps=12.0, wav_bytes=audio)
 
 ```bash
 python -m mtcodec open samples/photo_c.mtb
-python deploy/windows_register.py --exe "D:/MTB-MTC/release/MTBViewer.exe"
+python deploy/windows_register.py --exe "D:/MTB-MTC/release/viewer/MTBViewer.exe"
 python deploy/windows_register.py --unregister
 ```
 
 The viewer deliberately shows **no technical overlay**: no frame counter, no fps,
 no gop, no byte count. A still image looks like a still image; the window title is
-just the file name. Space pauses playback, Esc closes.
+just the file name. The bottom bar only carries playback controls.
+
+| Control | How to use it |
+| --- | --- |
+| Play / pause | the button, or **Space** |
+| Seek | drag the bar, or **← / →** (one second per press) |
+| Speed | 0.5× / 1× / 1.5× / 2× in the speed menu |
+| Volume | 0–100 slider, or **↑ / ↓** |
+| Loop | tick 循环 |
+| Close when finished | tick 播完关闭 |
+| Close the window | **Esc** |
+
+Speed and volume are applied to the embedded PCM itself: samples are resampled
+and scaled in numpy, written to a temporary WAV and handed to the system player,
+so no extra audio library is needed. The play clock is monotonic and scheduled
+to the next frame boundary, so a long clip keeps its pace instead of drifting.
 
 Windows 10/11 refuse to let a program silently become the default handler, so
 registration only puts MTB/MTC into the "Open with" list with the red M (image)
@@ -228,12 +243,19 @@ and blue M (video) icons. Tick "Always use this app" once and it sticks.
 
 ---
 
-## Build a single-file executable
+## Build an executable
 
 ```bash
 pip install pyinstaller
-python tools/build_exe.py          # -> dist/MTBViewer.exe, ~29 MB, windowed
+python tools/build_exe.py            # onefile -> dist/MTBViewer.exe
+python tools/build_exe.py --onedir   # folder  -> dist/MTBViewer/MTBViewer.exe
 ```
+
+Both are windowed (no console). The folder build is the one to keep installed:
+a onefile exe unpacks numpy, Pillow and Tcl/Tk into `%TEMP%` on every launch, so
+double-clicking it costs a few extra seconds. Same sample, start to close, on
+the dev machine: onefile 6.1–9.2 s, onedir 4.1–6.1 s. Ship the onefile in
+releases, install the folder locally.
 
 Full instructions (PyInstaller, Nuitka, Linux `.desktop`, macOS `.app`,
 Android via Termux/Chaquopy) are in [docs/BUILD.md](docs/BUILD.md).
@@ -245,8 +267,8 @@ Android via Termux/Chaquopy) are in [docs/BUILD.md](docs/BUILD.md).
 | Platform | Run source | Single file | Notes |
 | --- | --- | --- | --- |
 | Windows 10/11 | yes | `MTBViewer.exe` | file association + icons supported |
-| Linux | yes | PyInstaller | audio playback is silent (winsound is Windows only) |
-| macOS | yes | PyInstaller `.app` | same, silent; use python.org Python (Homebrew lacks Tk) |
+| Linux | yes | PyInstaller | audio via `aplay`; speed and volume still work |
+| macOS | yes | PyInstaller `.app` | audio via `afplay`; use python.org Python (Homebrew lacks Tk) |
 | Android | via Termux / Chaquopy | — | Tk must be replaced by a native widget |
 
 HarmonyOS and iOS are out of scope: they need a different language or a Mac build
@@ -259,13 +281,16 @@ chain. That is stated here on purpose, not forgotten.
 * **Large images are slow.** 7680×4320 takes 16.6 s to encode; a small picture
   upscaled to 8K took 82 s. Per-symbol arithmetic coding in pure Python.
 * **Audio is stored uncompressed.** 172 KB per second, 24–59 % of a test `.mtc`.
-* **Audio and video are only coarsely synced.** Playback uses an async system
-  player; there are no per-frame timestamps. Fine for a few seconds, it drifts.
+* **Audio is position-locked, not sample-locked.** Tk drives the picture; the
+  audio segment is regenerated and restarted on every seek, speed or volume
+  change. A long clip can drift by a few frames. For exact sync, export MP4.
 * **`.mtc` has no alpha.** Transparent animations lose transparency when stored
   as video (use `.mtb` for a single frame).
 * **APNG frame durations are lost.** `.mtc` is constant frame rate.
 * **Video needs ffmpeg.** Images work without it.
-* **Non-Windows builds are silent.** Picture plays, audio does not.
+* **Audio needs a system player.** Windows uses `winsound`; Linux and macOS
+  need `aplay` / `afplay` on `PATH`. Without one, pictures still play, sound
+  does not.
 
 ---
 

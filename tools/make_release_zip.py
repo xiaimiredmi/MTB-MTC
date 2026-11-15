@@ -2,16 +2,17 @@
 """打 GitHub 发布包：整个仓库文本（含 docs、README、CI），排除二进制与缓存。
 
     python tools/make_release_zip.py
--> release/MTB-MTC-v1.2.0.zip
+-> release/MTB-MTC-v1.2.1.zip
 """
 import os
 import zipfile
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-TOP = "MTB-MTC-v1.2.0"
+TOP = "MTB-MTC-v1.2.1"
 OUT = os.path.join(ROOT, "release", TOP + ".zip")
 
-SKIP_DIRS = {"__pycache__", "_shots", "build", ".git", ".venv", "venv"}
+SKIP_DIRS = {"__pycache__", "_shots", "build", "dist", "release", ".git",
+             ".venv", "venv", "node_modules"}
 SKIP_EXT = {".pyc", ".pyo", ".log", ".exe", ".zip"}
 SKIP_NAMES = {"Thumbs.db", "desktop.ini", ".DS_Store"}
 KEEP_ROOT_TXT = {"打包与安装说明.txt"}

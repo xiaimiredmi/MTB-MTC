@@ -174,7 +174,7 @@ def encode_video(frames, quality=85, subsample="420", gop=12, collect=None,
     return head + b"".join(parts)
 
 
-def decode_video(data, collect=None):
+def decode_video(data, collect=None, progress=None):
     if len(data) < VHDR.size:
         raise ValueError("truncated header")
     magic, ver, flag, quality, gop, w, h, nframes = VHDR.unpack(data[: VHDR.size])
@@ -228,6 +228,8 @@ def decode_video(data, collect=None):
         frames.append(_planes_to_rgb(recon, bool(flag), h, w))
         stats.append({"frame": len(frames) - 1, "type": "i" if intra else "p", "bytes": size + 5})
         ref = recon
+        if progress is not None:
+            progress(len(frames), nframes)
     if collect is not None:
         collect["stats"] = stats
         collect["audio"] = audio

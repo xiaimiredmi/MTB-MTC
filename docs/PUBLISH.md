@@ -16,7 +16,7 @@ Step-by-step. Every command is meant to be copy-pasted from the repository root.
 
 Nothing in this repository is large enough to need Git LFS; the binaries in
 `release/` (`MTBViewer.exe` 29 MB, `MTB-MTC-encoder-v1.2.zip` 40 MB —
-this one also contains the exe, `MTB-MTC-v1.2.0.zip` 2.8 MB — source + docs
+this one also contains the exe, `MTB-MTC-v1.2.1.zip` 2.8 MB — source + docs
 only) are deliberately kept **out of git** and attached to a Release instead.
 Keep it that way — GitHub blocks single files above 100 MB, and every clone
 would otherwise carry 70 MB of binaries.
@@ -25,7 +25,7 @@ Two zips, two purposes:
 
 | File | Contains | For whom |
 | --- | --- | --- |
-| `release/MTB-MTC-v1.2.0.zip` (2.8 MB) | source, docs, samples, reports — no exe | people who already have Python, or want to read the code |
+| `release/MTB-MTC-v1.2.1.zip` (2.8 MB) | source, docs, samples, reports — no exe | people who already have Python, or want to read the code |
 | `release/MTB-MTC-encoder-v1.2.zip` (40 MB) | the above plus `MTBViewer.exe` | people who just want to open a `.mtb` file on Windows |
 
 Rebuild the small one any time with `python tools/make_release_zip.py`.
@@ -130,7 +130,7 @@ repository:
 
 That creates the GitHub repository, adds `origin` and pushes `main` in one step.
 Then make the first release: `Releases → Draft a new release` on GitHub, tag
-`v1.2.0`, drag `release/MTBViewer.exe` and the two zips into the attachments box.
+`v1.2.1`, drag `release/MTBViewer.exe` and the two zips into the attachments box.
 
 Note: Desktop shows "Publish repository" only for a repo with no remote. If you
 already published once, use **Repository → Push** after committing.
@@ -183,28 +183,28 @@ The tag is what makes the repo look finished: GitHub shows "Releases" on the
 landing page, and the CI workflow in `.github/workflows/release.yml` fires.
 
 ```bash
-git tag -a v1.2.0 -m "v1.2.0: alpha plane, fps + embedded audio, size presets, batch convert"
-git push origin v1.2.0
+git tag -a v1.2.1 -m "v1.2.1: player controls, audio speed and volume, monotonic play clock, onedir build"
+git push origin v1.2.1
 ```
 
 Then attach the binaries. CLI:
 
 ```bash
-gh release create v1.2.0 \
-    --title "MTB/MTC v1.2.0" \
+gh release create v1.2.1 \
+    --title "MTB/MTC v1.2.1" \
     --notes-file CHANGELOG.md \
     release/MTBViewer.exe \
     release/MTB-MTC-encoder-v1.2.zip \
-    release/MTB-MTC-v1.2.0.zip
+    release/MTB-MTC-v1.2.1.zip
 ```
 
 Browser:
 
 1. Repository → **Releases** → **Draft a new release**
-2. Choose tag `v1.2.0`, title `MTB/MTC v1.2.0`
+2. Choose tag `v1.2.1`, title `MTB/MTC v1.2.1`
 3. Paste the top section of `CHANGELOG.md`
 4. Drag `release/MTBViewer.exe`, `release/MTB-MTC-encoder-v1.2.zip` and
-   `release/MTB-MTC-v1.2.0.zip` into the attachments box
+   `release/MTB-MTC-v1.2.1.zip` into the attachments box
 5. Publish
 
 Release notes should say what a visitor needs to know in ten seconds:
@@ -282,7 +282,7 @@ zip file name in sync. Mismatched version strings are the most common release bu
 | Chinese file names render as `?????` | terminal encoding, not git | `git config i18n.commitEncoding utf8`; the files themselves are stored correctly |
 | every file shows as modified | line endings | `git config core.autocrlf true`, then `git add -A` |
 | `Updates were rejected` | remote has commits | `git pull --rebase origin main` |
-| tag already exists | re-tagging | `git tag -d v1.2.0 && git push origin :refs/tags/v1.2.0` then re-tag |
+| tag already exists | re-tagging | `git tag -d v1.2.1 && git push origin :refs/tags/v1.2.1` then re-tag |
 | Actions fails on `init.tcl` | CI Python without Tk | use python.org installer in the workflow |
 | README images broken on GitHub | relative to the wrong folder | from `README.md`, paths are relative to the repo root (`assets/compare.png` is correct) |
 
@@ -313,7 +313,7 @@ zip file name in sync. Mismatched version strings are the most common release bu
 
 这个仓库没有大到要上 Git LFS 的东西。`release/` 里的二进制
 （`MTBViewer.exe` 29 MB、`MTB-MTC-encoder-v1.2.zip` 40 MB——这个里面也带 exe、
-`MTB-MTC-v1.2.0.zip` 2.8 MB——只有源码和文档）是**故意不入 git** 的，放
+`MTB-MTC-v1.2.1.zip` 2.8 MB——只有源码和文档）是**故意不入 git** 的，放
 Release 附件里。GitHub 单文件上限 100 MB，而且一旦入库，别人每次 clone 都要拖
 70 MB 二进制。
 
@@ -321,7 +321,7 @@ Release 附件里。GitHub 单文件上限 100 MB，而且一旦入库，别人�
 
 | 文件 | 内容 | 给谁 |
 | --- | --- | --- |
-| `release/MTB-MTC-v1.2.0.zip`（2.8 MB） | 源码、文档、样例、报告，不含 exe | 已经装了 Python 的人，或者想读代码的人 |
+| `release/MTB-MTC-v1.2.1.zip`（2.8 MB） | 源码、文档、样例、报告，不含 exe | 已经装了 Python 的人，或者想读代码的人 |
 | `release/MTB-MTC-encoder-v1.2.zip`（40 MB） | 上面那些再加 `MTBViewer.exe` | 只想在 Windows 上双击打开 `.mtb` 的人 |
 
 小包随时可用 `python tools/make_release_zip.py` 重打。
@@ -412,7 +412,7 @@ git config core.autocrlf true
    `MTB-MTC` → 发布。
 
 这一步就把 GitHub 仓库建好、加上 `origin`、把 `main` 推上去。然后到 GitHub 上
-`Releases → Draft a new release`，tag 填 `v1.2.0`，把 `release/MTBViewer.exe`
+`Releases → Draft a new release`，tag 填 `v1.2.1`，把 `release/MTBViewer.exe`
 和两个 zip 拖进附件框。
 
 注意：Desktop 只在"还没有远程"时显示"发布仓库"。发布过之后再提交，用
@@ -461,23 +461,23 @@ tag 是让仓库"看起来做完了"的关键：GitHub 首页会显示 Releases�
 `.github/workflows/release.yml` 也会被触发。
 
 ```bash
-git tag -a v1.2.0 -m "v1.2.0: alpha plane, fps + embedded audio, size presets, batch convert"
-git push origin v1.2.0
+git tag -a v1.2.1 -m "v1.2.1: player controls, audio speed and volume, monotonic play clock, onedir build"
+git push origin v1.2.1
 ```
 
 然后挂二进制。命令行：
 
 ```bash
-gh release create v1.2.0 --title "MTB/MTC v1.2.0" --notes-file CHANGELOG.md release/MTBViewer.exe release/MTB-MTC-encoder-v1.2.zip release/MTB-MTC-v1.2.0.zip
+gh release create v1.2.1 --title "MTB/MTC v1.2.1" --notes-file CHANGELOG.md release/MTBViewer.exe release/MTB-MTC-encoder-v1.2.zip release/MTB-MTC-v1.2.1.zip
 ```
 
 网页：
 
 1. 仓库 → **Releases** → **Draft a new release**
-2. 选 tag `v1.2.0`，标题 `MTB/MTC v1.2.0`
+2. 选 tag `v1.2.1`，标题 `MTB/MTC v1.2.1`
 3. 把 `CHANGELOG.md` 顶部那段贴进说明
 4. 把 `release/MTBViewer.exe`、`release/MTB-MTC-encoder-v1.2.zip`、
-   `release/MTB-MTC-v1.2.0.zip` 拖进附件框
+   `release/MTB-MTC-v1.2.1.zip` 拖进附件框
 5. 发布
 
 说明里应该写清楚"十秒钟内能看懂"的东西：
@@ -544,7 +544,7 @@ gh release create v1.3.0 --title "MTB/MTC v1.3.0" --notes-file CHANGELOG.md rele
 | 中文文件名显示成 `?????` | 终端编码问题，不是 git | `git config i18n.commitEncoding utf8`；文件本身存得没问题 |
 | 所有文件都显示已修改 | 换行符 | `git config core.autocrlf true`，然后 `git add -A` |
 | `Updates were rejected` | 远程已有提交 | `git pull --rebase origin main` |
-| tag 已存在 | 重复打 tag | `git tag -d v1.2.0 && git push origin :refs/tags/v1.2.0` 再重打 |
+| tag 已存在 | 重复打 tag | `git tag -d v1.2.1 && git push origin :refs/tags/v1.2.1` 再重打 |
 | Actions 卡在 `init.tcl` | CI 的 Python 没有 Tk | 在 workflow 里改用 python.org 安装包 |
 | GitHub 上 README 图片裂了 | 相对路径算错 | 在根目录 `README.md` 里写 `assets/compare.png` 就对 |
 
