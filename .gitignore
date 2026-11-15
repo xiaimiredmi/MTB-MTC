@@ -29,6 +29,7 @@ _shots_report/
 _tmp*/
 tmp_*/
 samples/converted/
+samples/q_test.mtc
 results/*.tmp
 
 # --- editor / OS ---
