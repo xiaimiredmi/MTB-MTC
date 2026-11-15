@@ -46,6 +46,7 @@ FONT = "Microsoft YaHei"
 MONO = "Consolas"
 
 SPEEDS = (0.5, 1.0, 1.5, 2.0)
+FFMPEG = shutil.which("ffmpeg") or shutil.which("ffmpeg.exe")
 
 
 def sniff(blob):
@@ -93,6 +94,7 @@ class AudioTrack(object):
         self._wav = wav_bytes
         self._cache = {}
         self._dir = None
+        self._lock = threading.Lock()
         if not wav_bytes or len(wav_bytes) < 44:
             return
         try:
@@ -171,25 +173,29 @@ class AudioTrack(object):
         got = self._cache.get(key)
         if got is not None:
             return got
-        if abs(key - 1.0) < 1e-6:
-            arr = self.samples.astype(np.float32)
-        else:
-            arr = None
-            path = self._atempo(key)
-            if path:
-                try:
-                    with wave.open(path, "rb") as wf:
-                        raw = wf.readframes(wf.getnframes())
-                    got = np.frombuffer(raw, dtype="<i2")
-                    if self.channels > 1:
-                        got = got.reshape(-1, self.channels)
-                    arr = got.astype(np.float32)
-                except Exception:
-                    arr = None
-            if arr is None:
-                arr = self._linear(key)
-        self._cache[key] = arr
-        return arr
+        with self._lock:
+            got = self._cache.get(key)
+            if got is not None:
+                return got
+            if abs(key - 1.0) < 1e-6:
+                arr = self.samples.astype(np.float32)
+            else:
+                arr = None
+                path = self._atempo(key)
+                if path:
+                    try:
+                        with wave.open(path, "rb") as wf:
+                            raw = wf.readframes(wf.getnframes())
+                        got = np.frombuffer(raw, dtype="<i2")
+                        if self.channels > 1:
+                            got = got.reshape(-1, self.channels)
+                        arr = got.astype(np.float32)
+                    except Exception:
+                        arr = None
+                if arr is None:
+                    arr = self._linear(key)
+            self._cache[key] = arr
+            return arr
 
     def build(self, start_sec=0.0, speed=1.0, gain=1.0):
         if not self.ok():
@@ -325,6 +331,20 @@ class Player(object):
         self.start()
 
     # ---------- 界面 ----------
+    def _chip(self, parent, text, cmd, w=54, h=28):
+        import tkinter as tk
+        c = tk.Canvas(parent, width=w, height=h, bg=BAR_BG,
+                      highlightthickness=0, cursor="hand2")
+        box = c.create_rectangle(0, 0, w, h, fill=CHIP_BG, outline="")
+        label = c.create_text(w / 2.0, h / 2.0, text=text, fill=FG,
+                              font=(FONT, 10))
+        c.bind("<Button-1>", lambda e: cmd())
+        c.bind("<Enter>", lambda e: c.itemconfigure(box, fill=CHIP_HI)
+               if not c.itemcget(box, "fill") in (ACCENT,) else None)
+        c.bind("<Leave>", lambda e: c.itemconfigure(box, fill=CHIP_BG)
+               if not c.itemcget(box, "fill") in (ACCENT,) else None)
+        return c, box, label
+
     def _build_ui(self, title):
         import tkinter as tk
 
@@ -332,76 +352,73 @@ class Player(object):
             child.destroy()
         self.root.title(title)
         self.root.configure(bg=BG)
-        self.root.minsize(480, 320)
+        self.root.minsize(560, 380)
+        self._chips = []
+        self._togs = []
+        self._cur = 0
 
-        self.image_label = tk.Label(self.root, bg=BG, bd=0, highlightthickness=0)
+        self.image_label = tk.Label(self.root, bg="#0B0D10", bd=0,
+                                    highlightthickness=0)
         self.image_label.pack(fill="both", expand=True)
+        self.image_label.bind("<Configure>", self._on_canvas_resize)
+        self.image_label.bind("<Double-Button-1>", lambda e: self.toggle())
 
-        bar = tk.Frame(self.root, bg=BAR_BG, padx=10, pady=6)
+        bar = tk.Frame(self.root, bg=BAR_BG)
         bar.pack(side="bottom", fill="x")
 
-        self.scale = tk.Scale(
-            bar, from_=0.0, to=self.duration, orient="horizontal",
-            resolution=0.01, showvalue=False, bg=BAR_BG, fg=FG,
-            troughcolor="#2B3039", highlightthickness=0, bd=0,
-            activebackground=ACCENT,
-        )
-        self.scale.pack(fill="x")
-        self.scale.bind("<ButtonPress-1>", self._seek_press)
-        self.scale.bind("<ButtonRelease-1>", self._seek_release)
-        self.scale.bind("<B1-Motion>", self._seek_press)
+        self.pb = tk.Canvas(bar, height=18, bg=BAR_BG, highlightthickness=0,
+                            cursor="hand2")
+        self.pb.pack(fill="x", padx=14, pady=(10, 0))
+        self.pb.bind("<Button-1>", self._pb_press)
+        self.pb.bind("<B1-Motion>", self._pb_drag)
+        self.pb.bind("<ButtonRelease-1>", self._pb_release)
+        self.pb.bind("<Configure>", lambda e: self._draw_progress(self._shown_time()))
 
         row = tk.Frame(bar, bg=BAR_BG)
-        row.pack(fill="x", pady=(4, 0))
+        row.pack(fill="x", padx=14, pady=(8, 10))
 
-        self.btn_play = tk.Button(
-            row, text="暂停", width=6, command=self.toggle,
-            bg="#2B3039", fg=FG, activebackground="#3A414C",
-            activeforeground=FG, bd=0, highlightthickness=0,
-        )
+        self.btn_play, self._play_box, self._play_text = self._chip(
+            row, "暂停", self.toggle, 54)
         self.btn_play.pack(side="left")
 
-        tk.Label(row, text="倍速", bg=BAR_BG, fg="#9BA3AE").pack(side="left", padx=(10, 4))
-        self.speed_var = tk.StringVar(value="1x")
-        menu = tk.OptionMenu(row, self.speed_var, *SPEEDS, command=self._on_speed)
-        menu.configure(bg="#2B3039", fg=FG, activebackground="#3A414C",
-                       activeforeground=FG, bd=0, highlightthickness=0, width=4)
-        menu["menu"].configure(bg="#2B3039", fg=FG)
-        menu.pack(side="left")
-
-        tk.Label(row, text="音量", bg=BAR_BG, fg="#9BA3AE").pack(side="left", padx=(12, 4))
-        self.vol = tk.Scale(
-            row, from_=0, to=100, orient="horizontal", length=110,
-            showvalue=False, command=self._on_volume,
-            bg=BAR_BG, fg=FG, troughcolor="#2B3039",
-            highlightthickness=0, bd=0, activebackground=ACCENT,
-        )
-        self.vol.set(100)
-        self.vol.pack(side="left")
-
-        self.loop_var = tk.BooleanVar(value=False)
-        tk.Checkbutton(row, text="循环", variable=self.loop_var,
-                       command=self._on_loop, bg=BAR_BG, fg=FG,
-                       selectcolor="#2B3039", activebackground=BAR_BG,
-                       activeforeground=FG, bd=0, highlightthickness=0
-                       ).pack(side="left", padx=(12, 0))
+        self.time_label = tk.Label(row, text="0.0 / 0.0 s", bg=BAR_BG, fg=DIM,
+                                   font=(MONO, 10))
+        self.time_label.pack(side="left", padx=(12, 0))
 
         self.end_var = tk.BooleanVar(value=False)
-        tk.Checkbutton(row, text="播完关闭", variable=self.end_var,
-                       command=self._on_end_close, bg=BAR_BG, fg=FG,
-                       selectcolor="#2B3039", activebackground=BAR_BG,
-                       activeforeground=FG, bd=0, highlightthickness=0
-                       ).pack(side="left", padx=(8, 0))
+        self.loop_var = tk.BooleanVar(value=False)
+        self._toggle_chip(row, "播完关闭", self.end_var, self._on_end_close,
+                          78).pack(side="right")
+        self._toggle_chip(row, "循环", self.loop_var, self._on_loop,
+                          52).pack(side="right", padx=(0, 6))
 
-        self.time_label = tk.Label(row, text="0.0 / 0.0 s", bg=BAR_BG, fg="#9BA3AE")
-        self.time_label.pack(side="right")
+        self.vol = tk.Scale(row, from_=0, to=100, orient="horizontal", length=84,
+                            showvalue=False, command=self._on_volume,
+                            bg=BAR_BG, fg=FG, troughcolor=TRACK,
+                            highlightthickness=0, bd=0, sliderrelief="flat",
+                            sliderlength=14, width=8, activebackground=ACCENT)
+        self.vol.set(100)
+        self.vol.pack(side="right", padx=(6, 12))
 
-        note = "" if self.audio.available() else "（当前系统没有找到音频后端，仅静音播放）"
-        if not self.track.ok():
-            note = "（这个文件没有音轨）"
+        tk.Label(row, text="音量", bg=BAR_BG, fg=DIM,
+                 font=(FONT, 9)).pack(side="right")
+
+        for sp in reversed(SPEEDS):
+            self._speed_chip(row, sp).pack(side="right", padx=2)
+
+        note = ""
+        if not self.audio.available():
+            note = "当前系统没有音频后端，只能静音播放"
+        elif not self.track.ok():
+            note = "这个文件没有音轨"
+        elif not self.track.stretched():
+            note = "没有找到 ffmpeg，倍速会连音调一起变"
         if note:
-            tk.Label(bar, text=note, bg=BAR_BG, fg="#A85B12",
-                     anchor="w").pack(fill="x", pady=(2, 0))
+            tk.Label(bar, text=note, bg=BAR_BG, fg="#C07A2A", anchor="w",
+                     font=(FONT, 9)).pack(fill="x", padx=14, pady=(0, 8))
+
+        self._paint_speeds()
+        self._paint_toggles()
 
         self.root.bind("<space>", self.toggle)
         self.root.bind("<Escape>", lambda e: self.close())
@@ -410,13 +427,52 @@ class Player(object):
         self.root.bind("<Up>", lambda e: self.volume_step(10))
         self.root.bind("<Down>", lambda e: self.volume_step(-10))
 
+    def _speed_chip(self, parent, speed):
+        text = ("%gx" % speed)
+        c, box, label = self._chip(
+            parent, text, lambda s=speed: self._set_speed(s), 46, 26)
+        self._chips.append((speed, c, box, label))
+        return c
+
+    def _paint_speeds(self):
+        for speed, c, box, label in self._chips:
+            on = abs(self.speed - speed) < 1e-6
+            c.itemconfigure(box, fill=(ACCENT if on else CHIP_BG))
+            c.itemconfigure(label, fill=("#FFFFFF" if on else FG))
+
+    def _toggle_chip(self, parent, text, var, cmd, w=52):
+        def _hit():
+            var.set(not var.get())
+            cmd()
+
+        c, box, label = self._chip(parent, text, _hit, w, 26)
+        self._togs.append((c, box, var))
+        return c
+
+    def _paint_toggles(self):
+        for c, box, var in self._togs:
+            c.itemconfigure(box, fill=(ACCENT if var.get() else CHIP_BG))
+
     # ---------- 帧 ----------
-    def _photo(self, idx):
-        ph = self._cache.get(idx)
+    def _fit_size(self):
+        ax = self.image_label.winfo_width()
+        ay = self.image_label.winfo_height()
+        h0, w0 = self.frames[0].shape[:2]
+        if ax <= 8 or ay <= 8:
+            return (w0, h0)
+        s = min(ax / float(w0), ay / float(h0))
+        return (max(1, int(round(w0 * s))), max(1, int(round(h0 * s))))
+
+    def _photo(self, idx, size):
+        key = (idx, size)
+        ph = self._cache.get(key)
         if ph is None:
-            ph = ImageTk.PhotoImage(Image.fromarray(self.frames[idx]))
-            self._cache[idx] = ph
-            self._order.append(idx)
+            img = Image.fromarray(self.frames[idx])
+            if size and img.size != size:
+                img = img.resize(size, Image.LANCZOS)
+            ph = ImageTk.PhotoImage(img)
+            self._cache[key] = ph
+            self._order.append(key)
             while len(self._order) > CACHE_LIMIT:
                 old = self._order.pop(0)
                 self._cache.pop(old, None)
@@ -426,15 +482,31 @@ class Player(object):
         if self.count == 0:
             return
         idx = int(max(0, min(self.count - 1, idx)))
-        self.image_label.configure(image=self._photo(idx))
+        self._cur = idx
+        self.image_label.configure(image=self._photo(idx, self._fit_size()))
+
+    def _on_canvas_resize(self, _event=None):
+        if self.count:
+            self.show(self._cur)
+
+    def _shown_time(self):
+        return self.pos if not self.playing else self.elapsed()
+
+    def _draw_progress(self, t):
+        c = self.pb
+        W = c.winfo_width() or 600
+        H = 18
+        mid = H / 2.0
+        c.delete("all")
+        c.create_line(0, mid, W, mid, fill=TRACK, width=4)
+        frac = 0.0 if not self.duration else min(1.0, max(0.0, t / self.duration))
+        x = W * frac
+        if frac > 0:
+            c.create_line(0, mid, x, mid, fill=ACCENT, width=4)
+        c.create_oval(x - 5, mid - 5, x + 5, mid + 5, fill=FG, outline="")
 
     def _update_bar(self, t):
-        if not self._dragging:
-            self._syncing = True
-            try:
-                self.scale.set(min(self.duration, max(0.0, t)))
-            finally:
-                self._syncing = False
+        self._draw_progress(t)
         self.time_label.configure(text="%.1f / %.1f s" % (t, self.duration))
 
     # ---------- 时钟 ----------
@@ -469,14 +541,14 @@ class Player(object):
         self.playing = True
         self.base_pos = self.pos
         self.base_wall = time.monotonic()
-        self.btn_play.configure(text="暂停")
+        self._set_play_label("暂停")
         self._play_audio(self.pos)
         self._schedule(0.0)
 
     def pause(self):
         self.pos = min(self.duration, self.elapsed())
         self.playing = False
-        self.btn_play.configure(text="播放")
+        self._set_play_label("播放")
         if self.job is not None:
             try:
                 self.root.after_cancel(self.job)
@@ -496,10 +568,32 @@ class Player(object):
             self.start()
         return "break"
 
+    def _set_play_label(self, text):
+        try:
+            self.btn_play.itemconfigure(self._play_text, text=text)
+        except Exception:
+            pass
+
     def _play_audio(self, start_sec):
         if not self.track.ok() or not self.audio.available():
             return
-        self.audio.play(self.track.build(start_sec, self.speed, self.gain))
+        self._audio_seq = getattr(self, "_audio_seq", 0) + 1
+        seq = self._audio_seq
+        speed, gain = self.speed, self.gain
+
+        def _worker():
+            try:
+                wav = self.track.build(start_sec, speed, gain)
+            except Exception:
+                return
+            if seq != self._audio_seq:
+                return
+            try:
+                self.audio.play(wav)
+            except Exception:
+                pass
+
+        threading.Thread(target=_worker, daemon=True).start()
 
     def _on_end(self):
         if self.loop:
@@ -516,18 +610,34 @@ class Player(object):
             return
         self.playing = False
         self.pos = self.duration
-        self.btn_play.configure(text="播放")
+        self._set_play_label("播放")
         self.audio.stop()
         self.show(self.count - 1)
         self._update_bar(self.duration)
 
-    # ---------- 交互 ----------
-    def _seek_press(self, _event=None):
-        self._dragging = True
+    # ---------- 进度条与交互 ----------
+    def _pb_time(self, event):
+        W = self.pb.winfo_width() or 600
+        frac = min(1.0, max(0.0, float(event.x) / W))
+        return frac * self.duration
 
-    def _seek_release(self, _event=None):
+    def _pb_press(self, event):
+        self._dragging = True
+        t = self._pb_time(event)
+        self._draw_progress(t)
+        self.time_label.configure(text="%.1f / %.1f s" % (t, self.duration))
+        return "break"
+
+    def _pb_drag(self, event):
+        t = self._pb_time(event)
+        self._draw_progress(t)
+        self.time_label.configure(text="%.1f / %.1f s" % (t, self.duration))
+        return "break"
+
+    def _pb_release(self, event):
         self._dragging = False
-        self.seek(float(self.scale.get()))
+        self.seek(self._pb_time(event))
+        return "break"
 
     def seek(self, sec):
         self.pos = min(self.duration, max(0.0, float(sec)))
@@ -543,9 +653,9 @@ class Player(object):
         self.seek(self.elapsed() + delta)
         return "break"
 
-    def _on_speed(self, _value=None):
-        label = self.speed_var.get()
-        self.speed = float(label.replace("x", ""))
+    def _set_speed(self, speed):
+        self.speed = float(speed)
+        self._paint_speeds()
         if self.playing:
             self.pos = self.elapsed()
             self.base_pos = self.pos
@@ -553,8 +663,6 @@ class Player(object):
             self._play_audio(self.pos)
 
     def _on_volume(self, value):
-        if self._syncing:
-            return
         try:
             self.gain = float(value) / 100.0
         except Exception:
@@ -572,9 +680,11 @@ class Player(object):
 
     def _on_loop(self):
         self.loop = bool(self.loop_var.get())
+        self._paint_toggles()
 
     def _on_end_close(self):
         self.close_at_end = bool(self.end_var.get())
+        self._paint_toggles()
 
     def close(self):
         self.playing = False
@@ -585,6 +695,10 @@ class Player(object):
                 pass
             self.job = None
         self.audio.cleanup()
+        try:
+            self.track.cleanup()
+        except Exception:
+            pass
         try:
             self.root.destroy()
         except Exception:
