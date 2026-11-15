@@ -1,0 +1,310 @@
+{
+  "images": [
+    {
+      "file": "wallpaper_minecraft_bedrock_edition_1080x1920.png",
+      "size": [
+        1080,
+        1920
+      ],
+      "alpha_in": false,
+      "alpha_out": false,
+      "bytes": 183797,
+      "ratio": 33.846036660010775,
+      "psnr": 32.289593435320356,
+      "enc_s": 1.6404011999838986,
+      "dec_s": 1.6330574000021443,
+      "png_bytes": 2078770
+    },
+    {
+      "file": "wallpaper_minecraft_bedrock_edition_1920x1080.png",
+      "size": [
+        1920,
+        1080
+      ],
+      "alpha_in": false,
+      "alpha_out": false,
+      "bytes": 307678,
+      "ratio": 20.218540162117538,
+      "psnr": 28.84458999458579,
+      "enc_s": 2.3965737999533303,
+      "dec_s": 2.380293000023812,
+      "png_bytes": 2636850
+    },
+    {
+      "file": "wallpaper_minecraft_bedrock_edition_2048x2048.png",
+      "size": [
+        2048,
+        2048
+      ],
+      "alpha_in": false,
+      "alpha_out": false,
+      "bytes": 358751,
+      "ratio": 35.07422139589855,
+      "psnr": 32.60290629093845,
+      "enc_s": 3.1907718000002205,
+      "dec_s": 3.287792699993588,
+      "png_bytes": 4283813
+    },
+    {
+      "file": "wallpaper_minecraft_bedrock_edition_2058x1440.png",
+      "size": [
+        2058,
+        1440
+      ],
+      "alpha_in": false,
+      "alpha_out": false,
+      "bytes": 367352,
+      "ratio": 24.20174655371415,
+      "psnr": 29.812393321575893,
+      "enc_s": 3.062556200020481,
+      "dec_s": 2.9514133000047877,
+      "png_bytes": 3416028
+    },
+    {
+      "file": "wallpaper_minecraft_bedrock_edition_560x1440.png",
+      "size": [
+        560,
+        1440
+      ],
+      "alpha_in": false,
+      "alpha_out": false,
+      "bytes": 90418,
+      "ratio": 26.755734477648257,
+      "psnr": 30.431756125443883,
+      "enc_s": 0.729156699962914,
+      "dec_s": 0.7483997999806888,
+      "png_bytes": 827449
+    },
+    {
+      "file": "wallpaper_minecraft_bedrock_edition_800x450.png",
+      "size": [
+        800,
+        450
+      ],
+      "alpha_in": true,
+      "alpha_out": true,
+      "bytes": 83563,
+      "ratio": 17.232507210128883,
+      "psnr": 26.078721010425735,
+      "enc_s": 1.303021700005047,
+      "dec_s": 1.574483499978669,
+      "png_bytes": 650484
+    },
+    {
+      "file": "wallpaper_minecraft_bedrock_edition_800x800.png",
+      "size": [
+        800,
+        800
+      ],
+      "alpha_in": false,
+      "alpha_out": false,
+      "bytes": 100870,
+      "ratio": 19.034400713790028,
+      "psnr": 28.23328047811359,
+      "enc_s": 0.8213144000037573,
+      "dec_s": 0.7469324999838136,
+      "png_bytes": 807507
+    }
+  ],
+  "size_ladder": {
+    "source": "wallpaper_minecraft_bedrock_edition_2048x2048.png",
+    "rows": [
+      {
+        "spec": "orig",
+        "out": [
+          2048,
+          2048
+        ],
+        "bytes": 358751,
+        "ratio": 35.07422139589855,
+        "psnr": 32.60290629093845,
+        "enc_s": 3.1560910000116564
+      },
+      {
+        "spec": "1080p",
+        "out": [
+          1080,
+          1080
+        ],
+        "bytes": 146871,
+        "ratio": 23.824989276303697,
+        "psnr": 30.035138537718524,
+        "enc_s": 1.184197700000368
+      },
+      {
+        "spec": "720p",
+        "out": [
+          720,
+          720
+        ],
+        "bytes": 79363,
+        "ratio": 19.5960334160755,
+        "psnr": 28.72813860213089,
+        "enc_s": 0.6140259000239894
+      },
+      {
+        "spec": "480p",
+        "out": [
+          480,
+          480
+        ],
+        "bytes": 42462,
+        "ratio": 16.278083933870285,
+        "psnr": 27.487182171994064,
+        "enc_s": 0.33255029999418184
+      },
+      {
+        "spec": "360p",
+        "out": [
+          360,
+          360
+        ],
+        "bytes": 27743,
+        "ratio": 14.014345961143352,
+        "psnr": 26.613441006528976,
+        "enc_s": 0.2099441000027582
+      },
+      {
+        "spec": "4k",
+        "out": [
+          2160,
+          2160
+        ],
+        "bytes": 379788,
+        "ratio": 36.85424499984202,
+        "psnr": 33.07508231959203,
+        "enc_s": 3.3877409999840893
+      },
+      {
+        "spec": "4x4k",
+        "out": [
+          4320,
+          4320
+        ],
+        "bytes": 841097,
+        "ratio": 66.5644985061176,
+        "psnr": 37.9082202203165,
+        "enc_s": 9.389049799996428
+      }
+    ]
+  },
+  "apng": {
+    "apng_frames": 8,
+    "mtc_frames": 8,
+    "bytes": 28465,
+    "size": [
+      320,
+      180
+    ],
+    "enc_s": 0.35385329998098314,
+    "has_audio": false
+  },
+  "videos": [
+    {
+      "file": "11月13日(1).mp4",
+      "src_bytes": 5552639,
+      "frames": 12,
+      "size": [
+        720,
+        1280
+      ],
+      "mtc_bytes": 380537,
+      "ratio": 87.18626572448935,
+      "audio_bytes": 176478,
+      "has_audio": true,
+      "enc_s": 5.695436800015159,
+      "dec_s": 3.0794344999594614,
+      "mtc_path": "samples\\converted\\11月13日(1).mtc",
+      "psnr_first": 40.28769830543332,
+      "mp4_bytes": 96432,
+      "mp4_path": "samples\\converted\\11月13日(1)_back.mp4",
+      "mp4_size": [
+        720,
+        1280
+      ]
+    },
+    {
+      "file": "11月13日.mp4",
+      "src_bytes": 5578285,
+      "frames": 12,
+      "size": [
+        720,
+        1280
+      ],
+      "mtc_bytes": 298280,
+      "ratio": 111.22971704438783,
+      "audio_bytes": 176478,
+      "has_audio": true,
+      "enc_s": 4.802191100025084,
+      "dec_s": 2.550643599999603,
+      "mtc_path": "samples\\converted\\11月13日.mtc",
+      "psnr_first": 47.20183056274274,
+      "mp4_bytes": 45688,
+      "mp4_path": "samples\\converted\\11月13日_back.mp4",
+      "mp4_size": [
+        720,
+        1280
+      ]
+    },
+    {
+      "file": "gzc_1000102_0b53bmav2aabkyaalpy4irumcc6dludqcwka.f2.mp4",
+      "src_bytes": 35455091,
+      "frames": 12,
+      "size": [
+        1280,
+        692
+      ],
+      "mtc_bytes": 366027,
+      "ratio": 87.11750772483997,
+      "audio_bytes": 176478,
+      "has_audio": true,
+      "enc_s": 5.202552100003231,
+      "dec_s": 3.134365000005346,
+      "mtc_path": "samples\\converted\\gzc_1000102_0b53bmav2aabkyaalpy4irumcc6d.mtc",
+      "psnr_first": 42.16225402997702,
+      "mp4_bytes": 130430,
+      "mp4_path": "samples\\converted\\gzc_1000102_0b53bmav2aabkyaalpy4irumcc6d_back.mp4",
+      "mp4_size": [
+        1280,
+        692
+      ]
+    },
+    {
+      "file": "你长期喝水还是长期喝茶？#科普 #喝茶 #涨知识 #邦尼一季超值GO #房子不干净索邦来邦尼.mp4",
+      "src_bytes": 30332623,
+      "frames": 12,
+      "size": [
+        1278,
+        720
+      ],
+      "mtc_bytes": 720180,
+      "ratio": 45.996500874781304,
+      "audio_bytes": 176524,
+      "has_audio": true,
+      "enc_s": 8.026609799999278,
+      "dec_s": 5.697858400002588,
+      "mtc_path": "samples\\converted\\你长期喝水还是长期喝茶？#科普 #喝茶 #涨知识 #邦尼一季超值GO #房子不干.mtc",
+      "psnr_first": 40.584473367890666,
+      "mp4_bytes": 249950,
+      "mp4_path": "samples\\converted\\你长期喝水还是长期喝茶？#科普 #喝茶 #涨知识 #邦尼一季超值GO #房子不干_back.mp4",
+      "mp4_size": [
+        1278,
+        720
+      ]
+    }
+  ],
+  "alpha": {
+    "size": [
+      1080,
+      1080
+    ],
+    "mtb_bytes": 131737,
+    "png_bytes": 640913,
+    "has_alpha": true,
+    "alpha_exact": true,
+    "png": "samples\\converted\\alpha_roundtrip.png"
+  },
+  "env": {
+    "ffmpeg": "D:\\ffmpeg-2026-11-05-git-0893feba65-essentials_build\\bin\\ffmpeg.EXE"
+  }
+}

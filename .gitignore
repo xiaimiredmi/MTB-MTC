@@ -1,0 +1,42 @@
+# --- Python ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+env/
+.pytest_cache/
+.mypy_cache/
+
+# --- build / packaging output ---
+*.spec
+build_exe_log.txt
+release/*.exe
+release/*.zip
+MTB-MTC-encoder-v*.zip
+MTBViewer.exe
+
+# --- test / bench scratch ---
+*.log
+_shots/
+_shots_report/
+_tmp*/
+tmp_*/
+samples/converted/
+results/*.tmp
+
+# --- editor / OS ---
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# --- local secrets ---
+.env
+*.key
+*.pem

@@ -1,0 +1,402 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<title>MTB / MTC 编码器实验报告</title>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%23C62828'/%3E%3Ctext x='16' y='24' font-family='Arial' font-weight='bold' font-size='18' fill='%23fff' text-anchor='middle'%3EM%3C/text%3E%3C/svg%3E">
+<style>
+  :root{
+    --paper:#ffffff; --panel:#F1F4F6; --ink:#15181D; --muted:#5A6570;
+    --rule:#D3DBE2; --accent:#0E717C;
+    --sans:"Segoe UI","Microsoft YaHei","PingFang SC",sans-serif;
+    --mono:"Cascadia Mono","Consolas","Courier New",monospace;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--paper);color:var(--ink);font-family:var(--sans);
+       font-size:15px;line-height:1.75;-webkit-font-smoothing:antialiased}
+  .wrap{max-width:1000px;margin:0 auto;padding:32px 20px 72px}
+  .rule{border:0;border-top:1px solid var(--rule);margin:0}
+  .num{font-family:var(--mono);font-variant-numeric:tabular-nums}
+
+  header.top{display:flex;justify-content:space-between;align-items:baseline;
+             border-bottom:1px solid var(--ink);padding-bottom:10px}
+  .tag{font-family:var(--mono);font-size:12px;color:var(--muted);letter-spacing:.02em}
+
+  .hero{padding:40px 0 34px;display:grid;gap:26px}
+  h1{margin:0;font-size:32px;line-height:1.22;font-weight:650;letter-spacing:-.02em}
+  .dek{margin:14px 0 0;color:var(--muted);max-width:56ch}
+  .metrics{display:grid;grid-template-columns:1fr;gap:0;border-top:1px solid var(--rule)}
+  .metric{padding:14px 0;border-bottom:1px solid var(--rule)}
+  .metric b{display:block;font-family:var(--mono);font-size:28px;font-weight:600;
+            line-height:1.1;letter-spacing:-.01em}
+  .metric span{font-size:12.5px;color:var(--muted)}
+  .metric b i{font-style:normal;font-size:13px;margin-left:2px}
+
+  section{padding-top:38px}
+  h2{font-size:19px;font-weight:650;margin:0 0 4px;letter-spacing:-.01em}
+  .lead{color:var(--muted);margin:6px 0 22px;max-width:62ch}
+
+  .flow{display:flex;flex-wrap:wrap;gap:8px;align-items:stretch;margin:0 0 8px}
+  .step{flex:1 1 118px;min-width:0;background:var(--panel);padding:12px 12px 10px;
+        border-left:2px solid var(--accent)}
+  .step b{display:block;font-family:var(--mono);font-size:12.5px;letter-spacing:.01em}
+  .step span{display:block;margin-top:5px;font-size:12.5px;color:var(--muted);line-height:1.55}
+  .arrow{display:none;align-self:center;font-family:var(--mono);color:var(--muted);font-size:13px}
+  .flow-note{font-size:12.5px;color:var(--muted);margin-top:12px}
+  @media (max-width:600px){ .step{flex:1 1 100%} }
+
+  .chart{width:100%;height:400px;margin:6px 0 4px}
+  .cap{font-size:12.5px;color:var(--muted);margin:2px 0 0}
+  figure{margin:0}
+  .tw{overflow-x:auto}
+  table{width:100%;border-collapse:collapse;table-layout:fixed;margin:18px 0 6px;
+        font-size:13.5px;min-width:640px}
+  th,td{padding:8px 10px;text-align:left;border-bottom:1px solid var(--rule);vertical-align:baseline}
+  th{font-weight:600;font-size:12px;color:var(--muted);border-bottom:1px solid var(--ink)}
+  td.n,th.n{font-family:var(--mono);text-align:right;font-variant-numeric:tabular-nums}
+  tr.strong td{border-bottom:1px solid var(--ink)}
+  .hl{color:var(--accent);font-weight:600}
+  .twi{overflow-x:auto}
+  .twi img{display:block;min-width:720px;height:auto;border:1px solid var(--rule)}
+  .icons{display:flex;flex-wrap:wrap;gap:32px;align-items:flex-start;margin:20px 0 10px}
+  .icons figure{margin:0}
+  .icons img{display:block;width:96px;height:96px}
+  .icons .cap{margin:9px 0 0;font-size:12px}
+
+  pre{background:var(--panel);padding:14px 16px;overflow-x:auto;font-family:var(--mono);
+      font-size:11.5px;line-height:1.85;margin:16px 0 6px;border-left:2px solid var(--rule)}
+  code{font-family:var(--mono);font-size:13px;background:var(--panel);padding:1px 5px}
+
+  ul.lim{margin:14px 0 0;padding-left:18px;color:var(--muted);font-size:14px}
+  ul.lim li{margin-bottom:9px}
+  ul.lim b{color:var(--ink);font-weight:600}
+
+  footer{margin-top:52px;padding-top:14px;border-top:1px solid var(--rule);
+         font-size:12px;color:var(--muted);display:grid;gap:4px}
+
+  @media (min-width:768px){
+    .wrap{padding:44px 32px 88px}
+    h1{font-size:40px}
+    .hero{grid-template-columns:minmax(0,1.35fr) minmax(0,1fr);align-items:start;gap:44px}
+    .metrics{border-top:1px solid var(--ink);padding-top:4px}
+    .metric{padding:16px 0}
+    .metric b{font-size:32px}
+    .arrow{display:block}
+    table{min-width:0}
+    .twi img{min-width:0;width:100%}
+    pre{font-size:12.5px}
+  }
+</style>
+
+<div class="wrap">
+  <header class="top">
+    <span class="tag">MTB / MTC &nbsp;v1.1</span>
+    <span class="tag">2026-11-15</span>
+  </header>
+
+  <div class="hero">
+    <div>
+      <h1>从零写一个图像与视频编码</h1>
+      <p class="dek">纯 Python 实现，自己定义的码流格式，编码器和解码器都在仓库里。没有调用 libjpeg、WebP 或 FFmpeg，熵编码、变换、量化和容器全部自写。</p>
+    </div>
+    <div class="metrics">
+      <div class="metric"><b><span class="hl">34.3</span><i>%</i></b><span>同 PSNR 下比 JPEG 少的码率（4 张图 13 个采样点）</span></div>
+      <div class="metric"><b><span class="hl">21.7</span><i>%</i></b><span>无损模式比 PNG 少的体积，逐像素完全一致</span></div>
+      <div class="metric"><b><span class="hl">4.6</span><i>×</i></b><span>固定机位场景，帧间编码相对全帧内</span></div>
+    </div>
+  </div>
+
+  <section>
+    <h2>码流怎么走</h2>
+    <p class="lead">一条主线贯穿图像和视频：可逆色彩变换 → 块变换 → 量化 → 扫描 → 上下文算术编码。视频只是在最前面多了一层帧间预测。</p>
+    <div class="flow">
+      <div class="step"><b>01 RGB → YCoCg-R</b><span>整数提升式色彩变换，三个平面互不相关后再分别编码</span></div>
+      <div class="arrow">→</div>
+      <div class="step"><b>02 8×8 正交 DCT</b><span>正交基，直流系数等于块均值 ×8，方便直接按像素误差定步长</span></div>
+      <div class="arrow">→</div>
+      <div class="step"><b>03 频率加权量化</b><span>步长表按径向频率 1 + 0.30 f<sup>1.15</sup> 生成，色度再乘 1.35</span></div>
+      <div class="arrow">→</div>
+      <div class="step"><b>04 Zigzag + 上下文</b><span>末位非零坐标、显著性、幅度类别、符号各自独立的自适应概率</span></div>
+      <div class="arrow">→</div>
+      <div class="step"><b>05 二进制算术编码</b><span>11 位自适应概率、8 位重归一化的区间编码器，输出 .mtb</span></div>
+    </div>
+    <p class="flow-note">视频（.mtc）分 I / P 帧：I 帧走上面整条链路；P 帧对每个 8×8 块先判断残差量化后是否全零，全零即 skip 只发 1 个标志位，否则发残差系数。直流分量按行内左邻块差分预测。</p>
+  </section>
+
+  <section>
+    <h2>压缩率与画质</h2>
+    <p class="lead">四张 512×512 实拍图，质量参数扫 13 档，和 JPEG、WebP、PNG 在同一坐标系里比。横轴是 PSNR，纵轴是每像素比特数（对数轴），曲线越靠左下越好。窄屏下表格可左右滑动查看完整列。</p>
+    <div id="rd" class="chart"></div>
+    <p class="cap">图 1 · photo_c 的率失真曲线。同一条曲线上越往右下代表码率越高、画质越好；同一 PSNR 下纵坐标更低的方案更省码率。</p>
+
+    <div class="tw">
+    <table>
+      <colgroup><col style="width:22%"><col style="width:13%"><col style="width:19%"><col style="width:16%"><col style="width:30%"></colgroup>
+      <thead><tr><th>图像 / 目标画质</th><th class="n">MTB 4:2:0</th><th class="n">JPEG</th><th class="n">WebP</th><th class="n">相对 JPEG</th></tr></thead>
+      <tbody>
+        <tr><td>photo_a · 30 dB</td><td class="n">0.185</td><td class="n">0.329</td><td class="n">0.157</td><td class="n hl">−43.7%</td></tr>
+        <tr><td>photo_a · 33 dB</td><td class="n">0.409</td><td class="n">0.669</td><td class="n">0.328</td><td class="n hl">−38.9%</td></tr>
+        <tr><td>photo_a · 36 dB</td><td class="n">0.892</td><td class="n">1.373</td><td class="n">0.752</td><td class="n hl">−35.0%</td></tr>
+        <tr><td>photo_b · 33 dB</td><td class="n">0.110</td><td class="n">0.261</td><td class="n">0.088</td><td class="n hl">−57.9%</td></tr>
+        <tr><td>photo_b · 36 dB</td><td class="n">0.600</td><td class="n">0.884</td><td class="n">0.473</td><td class="n hl">−32.1%</td></tr>
+        <tr><td>photo_b · 39 dB</td><td class="n">1.250</td><td class="n">1.763</td><td class="n">1.064</td><td class="n hl">−29.1%</td></tr>
+        <tr><td>photo_b · 42 dB</td><td class="n">2.327</td><td class="n">3.000</td><td class="n">1.967</td><td class="n hl">−22.4%</td></tr>
+        <tr><td>photo_c · 30 dB</td><td class="n">1.114</td><td class="n">1.371</td><td class="n">1.049</td><td class="n hl">−18.8%</td></tr>
+        <tr><td>photo_c · 33 dB</td><td class="n">1.783</td><td class="n">2.309</td><td class="n">1.657</td><td class="n hl">−22.8%</td></tr>
+        <tr><td>photo_c · 36 dB</td><td class="n">2.459</td><td class="n">3.264</td><td class="n">2.273</td><td class="n hl">−24.7%</td></tr>
+        <tr><td>photo_c · 39 dB</td><td class="n">3.205</td><td class="n">4.248</td><td class="n">2.990</td><td class="n hl">−24.5%</td></tr>
+        <tr><td>photo_c · 42 dB</td><td class="n">4.270</td><td class="n">5.787</td><td class="n">3.944</td><td class="n hl">−26.2%</td></tr>
+        <tr class="strong"><td>render_d · 42 dB</td><td class="n">0.057</td><td class="n">0.185</td><td class="n">0.047</td><td class="n hl">−69.4%</td></tr>
+      </tbody>
+    </table>
+    </div>
+    <p class="cap">表 1 · 单位 bpp（每像素比特）。数值越低越省；目标画质由率失真曲线上线性插值得到。</p>
+
+    <p class="lead" style="margin-top:26px">但这不只是“我们比 JPEG 强”。同画质下 WebP 反而比我们小 6%–27%（中位数 18%），这条要保持诚实：算术编码 + 上下文模型让老的霍夫曼基线 JPEG 吃亏，但 WebP 本身也有更细的预测和自适应量化。</p>
+
+    <figure>
+      <div class="twi">
+        <img src="assets/compare.png" alt="同码率 1.43 bpp 下的细节对比：左为 MTB 4:2:0，中为 JPEG，右为 WebP">
+      </div>
+      <p class="cap">图 2 · 都压到 1.43 bpp 后的同区域细节（左→右：MTB 4:2:0 / JPEG / WebP）。PSNR 分别是 31.44 / 30.21 / 31.91 dB：我们对 JPEG 领先约 1.2 dB，对 WebP 落后约 0.5 dB。窄屏可左右滑动查看三幅。</p>
+    </figure>
+  </section>
+
+  <section>
+    <h2>视频：帧间究竟省了多少</h2>
+    <p class="lead">24 帧、512×512、GOP 12。做一个固定机位（背景不动、物体移动）和一个平移镜头（每帧横移 3 像素），看 P 帧在哪种内容下起作用。</p>
+    <div id="frame" class="chart"></div>
+    <p class="cap">图 3 · 固定机位场景下逐帧字节数。I 帧吃到 19.5 KB，P 帧只剩 2–3 KB；MJPEG 每帧都要 30 KB 左右。</p>
+
+    <div class="tw">
+      <table>
+      <colgroup><col style="width:26%"><col style="width:18%"><col style="width:19%"><col style="width:19%"><col style="width:18%"></colgroup>
+      <thead><tr><th>场景</th><th class="n">MTC 帧间</th><th class="n">MTC 全帧内</th><th class="n">MJPEG</th><th class="n">平均 PSNR</th></tr></thead>
+      <tbody>
+        <tr><td>固定机位</td><td class="n hl">100.7 KB</td><td class="n">460.4 KB</td><td class="n">747.2 KB</td><td class="n">34.8 dB</td></tr>
+        <tr class="strong"><td>平移镜头</td><td class="n">479.0 KB</td><td class="n">477.0 KB</td><td class="n">766.6 KB</td><td class="n">34.5 dB</td></tr>
+      </tbody>
+      </table>
+    </div>
+    <p class="cap">表 2 · 同一质量档（q80、4:2:0）。固定机位里帧间比帧内省 4.6 倍、比 MJPEG 省 7.4 倍；平移镜头下帧间编码几乎没有收益——因为没有运动估计，整块位移让 skip 失效。</p>
+  </section>
+
+  <section>
+    <h2>无损模式与速度</h2>
+    <p class="lead">同一套算术编码器换个前端：中值边缘预测（MED）+ 邻域活跃度上下文，直接编残差。这条路是完全可逆的，解码结果逐像素等于原图。</p>
+    <div class="tw">
+    <table>
+      <colgroup><col style="width:30%"><col style="width:20%"><col style="width:20%"><col style="width:30%"></colgroup>
+      <thead><tr><th>图像</th><th class="n">MTB 无损</th><th class="n">PNG</th><th class="n">相对 PNG</th></tr></thead>
+      <tbody>
+        <tr><td>photo_a</td><td class="n">7.15 bpp</td><td class="n">8.64 bpp</td><td class="n hl">−17.2%</td></tr>
+        <tr><td>photo_b</td><td class="n">7.08 bpp</td><td class="n">9.53 bpp</td><td class="n hl">−25.7%</td></tr>
+        <tr><td>photo_c</td><td class="n">11.21 bpp</td><td class="n">17.42 bpp</td><td class="n hl">−35.7%</td></tr>
+        <tr class="strong"><td>render_d</td><td class="n">4.71 bpp</td><td class="n">5.14 bpp</td><td class="n hl">−8.4%</td></tr>
+      </tbody>
+    </table>
+    </div>
+    <p class="cap">表 3 · 四张图解码全部 bit-exact（测试断言 <code>array_equal</code> 通过）。纹理越密的图，上下文建模的收益越大。</p>
+
+    <div class="tw">
+    <table>
+      <colgroup><col style="width:24%"><col style="width:19%"><col style="width:19%"><col style="width:19%"><col style="width:19%"></colgroup>
+      <thead><tr><th>512×512 有损 q80</th><th class="n">编码</th><th class="n">解码</th><th class="n">码率</th><th class="n">PSNR</th></tr></thead>
+      <tbody>
+        <tr><td>photo_a</td><td class="n">1.94 s</td><td class="n">1.01 s</td><td class="n">0.60 bpp</td><td class="n">34.58 dB</td></tr>
+        <tr><td>photo_b</td><td class="n">0.16 s</td><td class="n">0.17 s</td><td class="n">0.43 bpp</td><td class="n">35.13 dB</td></tr>
+        <tr><td>photo_c</td><td class="n">0.66 s</td><td class="n">0.65 s</td><td class="n">1.43 bpp</td><td class="n">31.44 dB</td></tr>
+        <tr class="strong"><td>render_d</td><td class="n">0.17 s</td><td class="n">0.17 s</td><td class="n">0.12 bpp</td><td class="n">44.86 dB</td></tr>
+      </tbody>
+    </table>
+    </div>
+    <p class="cap">表 4 · 纯 Python、单线程、numpy 做变换。耗时随要编的系数个数增长，细节多的图更慢；和 libjpeg-turbo 差两个数量级，这是语言决定的，不是算法决定的。</p>
+  </section>
+
+  <section>
+    <h2>两个容器，两种后缀</h2>
+    <p class="lead">图像容器 <code>.mtb</code>、视频容器 <code>.mtc</code>。类型判断靠文件头前 4 字节的魔数，不靠扩展名，所以改了后缀也不会把文件认错。</p>
+    <div class="tw">
+    <table>
+      <colgroup><col style="width:22%"><col style="width:39%"><col style="width:39%"></colgroup>
+      <thead><tr><th>项目</th><th>MTB（图像）</th><th>MTC（视频）</th></tr></thead>
+      <tbody>
+        <tr><td>魔数</td><td class="n">MTB1</td><td class="n">MTC1</td></tr>
+        <tr><td>头长度</td><td class="n">12 字节</td><td class="n">16 字节</td></tr>
+        <tr><td>头字段</td><td class="n">ver, mode, quality, flags, w, h</td><td class="n">ver, 4:2:0, quality, gop, w, h, frames</td></tr>
+        <tr><td>扩展名</td><td class="n">.mtb</td><td class="n">.mtc</td></tr>
+        <tr><td>系统 MIME</td><td class="n">image/x-mtb</td><td class="n">video/x-mtc</td></tr>
+        <tr class="strong"><td>模式编号</td><td class="n">0 灰度 / 1 4:4:4 / 2 4:2:0 / 3 灰度无损 / 4 RGB 无损</td><td class="n">每帧 I 或 P，gop=0 为全帧内</td></tr>
+      </tbody>
+    </table>
+    </div>
+    <p class="cap">表 5 · 头结构分别是 <code>&lt;4sBBBBHH</code> 和 <code>&lt;4sBBBBHHI</code>，后面直接跟算术编码字节流，没有别的元数据段。</p>
+  </section>
+
+  <section>
+    <h2>双击就能看：图标与文件关联</h2>
+    <p class="lead">Windows 下把两种后缀注册成“由本程序打开”。图标统一是圆角方块加一个白色大写 M，照片红、视频蓝，在资源管理器里一眼能分清。</p>
+    <div class="icons">
+      <figure><img src="assets/icons/mtb.png" alt="MTB 图标：红色圆角方块，白色大写 M"><p class="cap">MTB · 图像 · 红</p></figure>
+      <figure><img src="assets/icons/mtc.png" alt="MTC 图标：蓝色圆角方块，白色大写 M"><p class="cap">MTC · 视频 · 蓝</p></figure>
+    </div>
+    <p class="cap">图标由 <code>tools/make_icons.py</code> 用 Pillow 直接画出来：1024 画布上画圆角矩形和粗体 M，再降采样成 16/24/32/48/64/128/256 七档写进 <code>.ico</code>（放在 <code>deploy/icons/</code> 给系统用，<code>assets/icons/</code> 里的 512 png 给网页用），小尺寸下笔画仍然清楚。</p>
+<pre>python deploy\windows_register.py                      # 写入 HKCU，不需要管理员
+python deploy\windows_register.py --python C:\Python312\python.exe
+python deploy\windows_register.py --unregister         # 撤掉关联</pre>
+    <p class="cap">注册内容：<code>.mtb</code> → ProgID <code>MTB.Image</code>，<code>.mtc</code> → <code>MTB.Video</code>；每个 ProgID 带友好名、Content Type、PerceivedType、DefaultIcon 和 <code>shell\open\command</code>（指向 <code>deploy\mtb_launcher.py</code>，用 pythonw 起，双击时不会闪黑框）。</p>
+    <ul class="lim">
+      <li><b>关于“设为默认”。</b>Win10/11 不允许程序静默把自己改成默认打开方式——<code>UserChoice</code> 有哈希校验，只有用户在“打开方式”里勾一次“始终使用此应用”才会写入。我们能做的是把 ProgID、图标和打开命令都注册好，第一次双击时系统直接认出“MTB 图像”，选一次之后就是默认。</li>
+      <li><b>换解释器要重跑。</b>关联里记的是绝对路径的 pythonw，Python 升级或换目录之后双击会失效，重跑一次注册脚本即可。</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>跨平台：一份源码，三个桌面，一个安卓</h2>
+    <p class="lead">核心编解码只用 <code>numpy</code> 和 <code>Pillow</code>，没有任何 Windows 专有调用；窗口、图标、注册表这些平台相关的部分单独抽在 <code>viewer.py</code> 和 <code>deploy/</code> 里。这是能搬去别的系统的前提。</p>
+    <div class="tw">
+    <table>
+      <colgroup><col style="width:16%"><col style="width:40%"><col style="width:22%"><col style="width:22%"></colgroup>
+      <thead><tr><th>平台</th><th>怎么跑</th><th>界面</th><th>状态</th></tr></thead>
+      <tbody>
+        <tr><td>Windows</td><td>CPython + 注册表关联，双击开 viewer</td><td>tkinter</td><td class="hl">已完成，已实测</td></tr>
+        <tr><td>Linux</td><td>同一份源码，装 <code>python3-tk</code>，加一个 <code>.desktop</code> + <code>xdg-mime</code> 注册</td><td>tkinter</td><td>代码就绪，缺安装脚本</td></tr>
+        <tr><td>macOS</td><td>python.org 版 Python（自带 Tk），<code>.app</code> 包 + <code>duti</code> 注册后缀</td><td>tkinter</td><td>代码就绪，缺打包脚本</td></tr>
+        <tr class="strong"><td>Android</td><td>需要把 CPython 塞进去，见下面三条路</td><td>要换掉 tkinter</td><td>待动手</td></tr>
+        <tr><td>HarmonyOS</td><td>不做：ArkTS + 原生 SDK，等于再学一门语言</td><td>—</td><td>放弃</td></tr>
+        <tr><td>iOS</td><td>不做：必须 macOS + Xcode + 苹果开发者签名</td><td>—</td><td>放弃</td></tr>
+      </tbody>
+    </table>
+    </div>
+    <p class="cap">表 6 · 桌面三系统的差异只在“怎么把后缀和图表挂上”，编解码本身一行都不用改。</p>
+
+    <p class="lead" style="margin-top:26px">安卓的三条可行路径，按投入从小到大：</p>
+    <div class="flow">
+      <div class="step"><b>① Termux</b><span><code>pkg install python numpy pillow</code>，把仓库拷进手机目录，直接 <code>python -m mtcodec</code>。零改动，半小时能跑通；缺点是只有终端，没有桌面图标。</span></div>
+      <div class="arrow">→</div>
+      <div class="step"><b>② Chaquopy</b><span>Android Studio 里加 Chaquopy 插件，CPython 嵌进 APK，numpy 官方支持、Pillow 也能装。写一个最小 Activity：选图 → 后台线程 <code>encode_image</code> → 写 <code>.mtb</code>。代价是 APK 约 40–70 MB。</span></div>
+      <div class="arrow">→</div>
+      <div class="step"><b>③ Kivy / Buildozer</b><span>在 Linux 或 WSL 上 <code>buildozer android debug</code>，UI 换成 Kivy 组件。一套界面桌面和安卓通用，但界面这一层要重写。</span></div>
+    </div>
+    <p class="flow-note">建议顺序：先用 Termux 验证同一份代码在 ARM 安卓上算得对（这一步不改代码，只验证算术编码和 numpy 在手机上的结果），确认之后再用 Chaquopy 出正式 APK。安卓端唯一必须重写的是界面——<code>viewer.py</code> 用的 tkinter 在安卓上没有，需要换成一个图片控件加播放按钮。</p>
+  </section>
+
+  <section>
+    <h2>怎么用</h2>
+    <p class="lead">命令行和库两种入口，输出都是单文件；输出路径不写扩展名时会自动补 <code>.mtb</code> / <code>.mtc</code>。</p>
+<pre>python -m mtcodec encode photo.png out.mtb --quality 85 --subsample 420
+python -m mtcodec decode out.mtb back.png
+python -m mtcodec encode photo.png lossless.mtb --lossless
+python -m mtcodec video-encode frames/ out.mtc --quality 80 --gop 12
+python -m mtcodec video-decode out.mtc frames_out/
+python -m mtcodec open samples/demo.mtc            # 直接开窗口播放</pre>
+<pre>import mtcodec, numpy as np
+blob = mtcodec.encode_image(img, quality=85, subsample="420")
+img2 = mtcodec.decode_image(blob)
+print(mtcodec.psnr(img, img2))
+blob = mtcodec.encode_video(frames, quality=80, gop=12)
+frames2, stats = mtcodec.decode_video(blob)</pre>
+    <p class="cap">包名 <code>mtcodec</code>，格式常量集中在 <code>mtcodec/format.py</code>：<code>EXT_IMAGE = ".mtb"</code>、<code>EXT_VIDEO = ".mtc"</code>、<code>MIME_IMAGE</code>、<code>MIME_VIDEO</code>，改一处即可全文生效。</p>
+  </section>
+
+  <section>
+    <h2>它现在还不够好的地方</h2>
+    <ul class="lim">
+      <li><b>没有运动估计。</b>平移镜头下 P 帧退化回帧内水平，这是最明显的一块短板；加一个 8×8 全搜索 + 半像素插值就能把这一段追上几倍。</li>
+      <li><b>没有码率控制。</b>只有固定量化步长，出不了“目标 200 KB”这种约束，得靠扫描质量参数。</li>
+      <li><b>只按 MSE 优化。</b>量化步长是频率先验，没有感知加权、没有 SSIM / VMAF 导向，也没有色度视觉冗余压缩。</li>
+      <li><b>格式能力窄。</b>只支持灰度 / RGB，8 位；没有 4:2:2、alpha、渐进式传输、ROI 和多帧并行。</li>
+      <li><b>速度。</b>熵编码是纯 Python 逐符号循环，单张 512×512 需要 0.2–2 秒；同样的算法换成 C 或 SIMD 会快 100 倍以上。</li>
+    </ul>
+  </section>
+
+  <footer>
+    <span>素材：Windows 自带壁纸图，中心裁方形后缩放到 512×512（4 张）；对比基线为 Pillow 的 JPEG / WebP / PNG 编码器。</span>
+    <span>环境：Windows · Python 3.13.18 · numpy 2.5.4 · Pillow 13.0.0。指标只有 PSNR，口径为 RGB 三通道 MSE。</span>
+    <span>码率口径：bpp = 文件字节 × 8 ÷ 像素数，含容器头。</span>
+  </footer>
+</div>
+
+<script src="https://fastly.jsdelivr.net/npm/echarts@5.5.1/dist/echarts.min.js"></script>
+<script>
+(function(){
+  var rdData = {
+    'MTB 4:2:0': [[25.85,0.329],[25.99,0.349],[26.14,0.371],[26.31,0.397],[26.69,0.457],[27.15,0.535],[27.74,0.645],[28.52,0.8],[29.65,1.036],[31.44,1.432],[34.94,2.22],[38.47,3.016],[44.51,5.159]],
+    'MTB 4:4:4': [[25.87,0.355],[26.01,0.377],[26.16,0.401],[26.33,0.43],[26.71,0.493],[27.17,0.578],[27.77,0.7],[28.56,0.873],[29.71,1.137],[31.53,1.587],[35.17,2.544],[38.99,3.621],[47.35,7.012]],
+    'JPEG': [[23.68,0.224],[25.33,0.376],[26.3,0.527],[27.03,0.659],[28.16,0.889],[28.94,1.072],[29.58,1.248],[30.21,1.434],[31.18,1.733],[32.72,2.22],[36.19,3.326],[40.18,4.637],[46.11,8.389]],
+    'JPEG 4:4:4': [[23.68,0.318],[25.33,0.47],[26.31,0.623],[27.04,0.758],[28.19,0.991],[28.97,1.177],[29.62,1.357],[30.26,1.55],[31.24,1.865],[32.82,2.394],[36.45,3.661],[40.93,5.256],[51.02,11.96]],
+    'WebP': [[26.11,0.324],[26.87,0.446],[27.52,0.573],[28.13,0.694],[29.29,0.918],[30.38,1.12],[31.42,1.334],[32.35,1.52],[33.45,1.751],[35.72,2.206],[39.79,3.179],[42.3,4.047],[43.86,4.99]]
+  };
+  var order = ['MTB 4:2:0','MTB 4:4:4','WebP','JPEG','JPEG 4:4:4'];
+  function nahLegend(isNarrow){
+    var o = { type: 'scroll', itemWidth: 14, itemHeight: 8,
+              textStyle: { fontSize: 11, color: '#5A6570' } };
+    if (isNarrow) { o.top = 24; o.left = 0; } else { o.top = 2; o.right = 0; }
+    return o;
+  }
+  var colors = ['#0E717C','#0E717C','#7A8895','#B4BEC7','#D3DBE2'];
+  var rdSeries = order.map(function(name, i){
+    return {
+      name: name, type: 'line', smooth: false, symbol: 'circle', symbolSize: 6,
+      lineStyle: { width: 2, opacity: i < 2 ? 1 : 0.85 },
+      itemStyle: { color: colors[i], borderWidth: 0 },
+      emphasis: { focus: 'series' },
+      data: rdData[name].map(function(p){ return [p[0], p[1]]; })
+    };
+  });
+  var rd = echarts.init(document.getElementById('rd'));
+  var narrow = window.innerWidth < 760;
+  rd.setOption({
+    title: { text: 'photo_c 率失真曲线', left: 0, top: 0,
+             textStyle: { fontSize: 14, fontWeight: 600, color: '#15181D' } },
+    legend: nahLegend(narrow),
+    tooltip: { trigger: 'axis', triggerOn: 'mousemove|click', renderMode: 'richText',
+               confine: true, textStyle: { fontSize: 11 },
+               valueFormatter: function(v){ return typeof v === 'number' ? v.toFixed(3) + ' bpp' : v; } },
+    grid: { left: 8, right: 16, top: narrow ? 96 : 62, bottom: 34, containLabel: true },
+    xAxis: { type: 'value', min: 23, max: 48, name: 'PSNR (dB)', nameLocation: 'middle',
+             nameGap: 26, nameTextStyle: { fontSize: 11, color: '#5A6570' },
+             axisLabel: { fontSize: 11, color: '#5A6570' },
+             splitLine: { lineStyle: { color: '#E6EBEF' } } },
+    yAxis: { type: 'log', min: 0.2, max: 12, name: 'bpp', nameGap: 8,
+             nameTextStyle: { fontSize: 11, color: '#5A6570' },
+             axisLabel: { fontSize: 11, color: '#5A6570' },
+             splitLine: { lineStyle: { color: '#E6EBEF' } } },
+    series: rdSeries
+  });
+
+  var oursBytes = [19.5,3.7,2.9,2.8,2.4,2.3,2.6,2.4,2.2,2.8,3.0,2.5,19.4,3.7,2.7,1.9,2.5,2.6,2.7,2.8,2.5,2.9,3.1,2.5];
+  var mjpegBytes = [30.9,31.2,30.8,30.4,30.3,30.4,30.0,30.0,30.1,30.7,30.9,31.1,31.1,31.0,30.7,30.3,30.2,29.9,29.7,29.5,29.7,30.3,30.2,30.3];
+  var cats = oursBytes.map(function(_, i){ return String(i + 1); });
+  var fr = echarts.init(document.getElementById('frame'));
+  fr.setOption({
+    title: { text: '固定机位 · 逐帧字节', left: 0, top: 0,
+             textStyle: { fontSize: 14, fontWeight: 600, color: '#15181D' } },
+    legend: narrow ? { top: 24, left: 0, itemWidth: 14, itemHeight: 8,
+              textStyle: { fontSize: 11, color: '#5A6570' } }
+            : { top: 2, right: 0, itemWidth: 14, itemHeight: 8,
+              textStyle: { fontSize: 11, color: '#5A6570' } },
+    tooltip: { trigger: 'axis', triggerOn: 'mousemove|click', renderMode: 'richText',
+               confine: true, textStyle: { fontSize: 11 },
+               valueFormatter: function(v){ return typeof v === 'number' ? v.toFixed(1) + ' KB' : v; } },
+    grid: { left: 8, right: 12, top: narrow ? 96 : 62, bottom: 34, containLabel: true },
+    xAxis: { type: 'category', data: cats, name: '帧号', nameLocation: 'middle', nameGap: 26,
+             nameTextStyle: { fontSize: 11, color: '#5A6570' },
+             axisLabel: { fontSize: 10, color: '#5A6570', interval: narrow ? 3 : 1 },
+             axisTick: { show: false } },
+    yAxis: { type: 'value', name: 'KB', nameGap: 8, max: 34,
+             nameTextStyle: { fontSize: 11, color: '#5A6570' },
+             axisLabel: { fontSize: 11, color: '#5A6570' },
+             splitLine: { lineStyle: { color: '#E6EBEF' } } },
+    series: [
+      { name: 'MTC 帧间', type: 'bar', barWidth: narrow ? '30%' : '38%', barGap: '14%',
+        data: oursBytes, itemStyle: { color: '#0E717C' } },
+      { name: 'MJPEG', type: 'bar', barWidth: narrow ? '30%' : '38%', barGap: '14%',
+        data: mjpegBytes, itemStyle: { color: '#C3CDD5' } }
+    ]
+  });
+
+  window.addEventListener('resize', function(){ rd.resize(); fr.resize(); });
+})();
+</script>
+</html>

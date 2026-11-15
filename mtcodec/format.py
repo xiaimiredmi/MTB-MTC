@@ -1,0 +1,6 @@
+NAME = "MTB"
+VIDEO_NAME = "MTC"
+EXT_IMAGE = ".mtb"
+EXT_VIDEO = ".mtc"
+MIME_IMAGE = "image/x-mtb"
+MIME_VIDEO = "video/x-mtc"

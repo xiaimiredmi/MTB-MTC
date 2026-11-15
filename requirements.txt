@@ -1,0 +1,7 @@
+# core (images + all CLI except video import/export)
+numpy>=1.24
+pillow>=10.0
+
+# video import/export: an ffmpeg binary is required.
+# If you do not already have ffmpeg on PATH, this pip package supplies one:
+# imageio-ffmpeg>=0.4
