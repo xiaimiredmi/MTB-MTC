@@ -26,8 +26,16 @@ ARGS = [
     "--paths", ROOT,
     "--hidden-import", "mtcodec.viewer",
     "--hidden-import", "PIL.ImageTk",
-    os.path.join(ROOT, "deploy", "mtb_app.py"),
 ]
+
+NATIVE = os.path.join(ROOT, "mtcodec", "mtfastdec.dll")
+if os.path.exists(NATIVE):
+    ARGS += ["--add-binary", NATIVE + ";mtcodec"]
+    print("native decoder included")
+else:
+    print("native decoder missing — the player will use the pure Python path")
+
+ARGS.append(os.path.join(ROOT, "deploy", "mtb_app.py"))
 
 print("mode", MODE)
 print(" ".join(ARGS))

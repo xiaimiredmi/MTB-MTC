@@ -224,12 +224,12 @@ just the file name. The bottom bar only carries playback controls.
 
 | Control | How to use it |
 | --- | --- |
-| Play / pause | the button, or **Space** |
+| Play / pause | the button, **Space**, or double-click the picture |
 | Seek | drag the bar, or **← / →** (one second per press) |
-| Speed | 0.5× / 1× / 1.5× / 2× in the speed menu |
+| Speed | one of the 0.5× / 1× / 1.5× / 2× chips |
 | Volume | 0–100 slider, or **↑ / ↓** |
-| Loop | tick "Loop" |
-| Close when finished | tick "Close when done" |
+| Loop | click "Loop" |
+| Close when finished | click "Close when done" |
 | Close the window | **Esc** |
 
 Speed uses ffmpeg's `atempo` filter on the whole track, so the pitch never
@@ -248,10 +248,35 @@ stays sharp.
 Opening a clip never leaves the window blank: it shows a progress bar, a
 percentage, and the frame being decoded, and once decoding ends that same
 window becomes the player — the bar hands over to the playback seek bar.
-Decoding in pure Python costs a few hundred milliseconds per frame, so size and
-frame count decide the wait (`720p / 12 fps`, 120 frames: about 69 s;
-`360p` with the same frame count: about 27 s). For a short, smooth demo, pick
-frames = seconds × fps:
+
+## Decode speed: Rust plus Python
+
+76% of decode time sat in the bit-by-bit arithmetic loop — roughly 38 million
+Python calls per clip. `native/` is a Rust crate implementing the *same*
+bit-level algorithm behind a C ABI: one call decodes a whole plane, so Python
+pays three FFI crossings per frame instead of millions.
+
+| Clip | Pure Python | Rust backend | Speedup |
+| --- | --- | --- | --- |
+| `demo.mtc` (12 frames) | 0.67 s / 55.4 ms per frame | 0.30 s / 24.8 ms per frame | 2.2× |
+| `q_360p.mtc` (120 frames, 638×360) | 21.10 s / 175.9 ms per frame | 4.76 s / 39.7 ms per frame | 4.4× |
+
+Per-frame SHA1 of both paths is **identical** — this is an exact speedup, not
+a lossy shortcut. Build it with:
+
+```bash
+cd native
+cargo build --release
+cp target/release/mtfastdec.dll ../mtcodec/     # Windows
+```
+
+When `mtfastdec.dll` is absent (or `MTCODEC_NO_NATIVE=1` is set) the decoder
+falls back to pure Python automatically, so nothing breaks — it is just slower.
+`tools/build_exe.py` bundles the dll into both the onefile and onedir builds.
+
+Size and frame count still decide the wait (same machine, Rust backend:
+`720p / 12 fps` with 120 frames is about 15 s, `360p` with the same frame count
+about 5 s). For a short, smooth demo, pick frames = seconds × fps:
 
 ```powershell
 python -m mtcodec convert in.mp4 in.mtc --size 360p --fps 30 --max-frames 300 --gop 30

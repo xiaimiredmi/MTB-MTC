@@ -20,6 +20,7 @@ release/*.zip
 release/viewer/
 MTB-MTC-encoder-v*.zip
 MTBViewer.exe
+native/target/
 
 # --- test / bench scratch ---
 *.log

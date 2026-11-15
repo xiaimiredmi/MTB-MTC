@@ -4,6 +4,7 @@ import numpy as np
 
 from . import arithmetic as ac
 from . import color
+from . import fastdec
 from . import transform as tf
 from .entropy import Model, ModeModel, dec_block, dec_skip, enc_block, enc_skip
 from .image_codec import _plane_step, _pad
@@ -197,6 +198,7 @@ def decode_video(data, collect=None, progress=None):
     step = tf.step_table(tf.quality_scale(quality))
     m = Model(3)
     mm = ModeModel(3)
+    fast = fastdec.PlaneDecoder(m, mm, 3) if fastdec.available() else None
     ref = None
     frames = []
     stats = []
@@ -218,13 +220,25 @@ def decode_video(data, collect=None, progress=None):
                 pw = -(-w // 8) * 8
                 shapes = [(ph, pw)] * 3
         recon = []
+        if fast is not None:
+            fast.attach(dec)
         for i in range(3):
             s = _plane_step(step, i)
             if intra:
                 shape = shapes[i]
-                recon.append(_dec_intra(dec, m, i, shape, s)[1])
+                if fast is not None:
+                    qz = fast.decode_plane(i, shape[0] // 8, shape[1] // 8, False)
+                    recon.append(_recon(qz, s, None, i))
+                else:
+                    recon.append(_dec_intra(dec, m, i, shape, s)[1])
             else:
-                recon.append(_dec_inter(dec, mm, m, i, ref[i].shape, ref[i], s)[1])
+                if fast is not None:
+                    qz = fast.decode_plane(i, ref[i].shape[0] // 8,
+                                           ref[i].shape[1] // 8, True)
+                    pred = tf.blocks_of(ref[i].astype(np.float64))
+                    recon.append(_recon(qz, s, pred, i))
+                else:
+                    recon.append(_dec_inter(dec, mm, m, i, ref[i].shape, ref[i], s)[1])
         frames.append(_planes_to_rgb(recon, bool(flag), h, w))
         stats.append({"frame": len(frames) - 1, "type": "i" if intra else "p", "bytes": size + 5})
         ref = recon

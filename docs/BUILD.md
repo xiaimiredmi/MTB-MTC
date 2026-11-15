@@ -43,6 +43,7 @@ python -m PyInstaller --noconfirm --clean --onefile --windowed
     --paths .
     --hidden-import mtcodec.viewer
     --hidden-import PIL.ImageTk
+    --add-binary mtcodec/mtfastdec.dll;mtcodec
     deploy/mtb_app.py
 ```
 
@@ -55,6 +56,7 @@ Why each flag matters:
 | `--icon deploy/icons/mtb.ico` | Explorer shows the red M on the exe itself |
 | `--hidden-import mtcodec.viewer` | the viewer is imported via `-m`, static analysis misses it |
 | `--hidden-import PIL.ImageTk` | Pillow loads ImageTk lazily; without this the exe dies at first image |
+| `--add-binary mtcodec/mtfastdec.dll;mtcodec` | Rust decode backend; skipped automatically when the dll is absent |
 | `--noconfirm --clean` | reproducible builds, no stale cache prompts |
 
 Result on Windows 11 / Python 3.12: `dist\MTBViewer.exe`, about **30 MB**;
@@ -72,6 +74,25 @@ Measured on the dev machine, same sample, start to close (both include a 1.2 s
 auto-close timer and the decode step): **onefile 6.1–9.2 s, onedir 4.1–6.1 s**.
 The folder build is also easier to code-sign and smaller to update: ship the
 onefile in releases, install the folder locally.
+
+### 1b. The native decoder (optional, 2–4× faster decode)
+
+Decoding used to spend 76% of its time in the bit-by-bit arithmetic loop. The
+`native/` crate implements the same algorithm in Rust, and `mtcodec/fastdec.py`
+loads it through `ctypes`:
+
+```bash
+cd native
+cargo build --release
+cp target/release/mtfastdec.dll ../mtcodec/        # Windows
+cp target/release/libmtfastdec.so ../mtcodec/      # Linux
+cp target/release/libmtfastdec.dylib ../mtcodec/   # macOS
+```
+
+Rust 1.70+ is enough; the crate has **no dependencies**, so the build needs no
+network. Without the dll the pure Python decoder still runs — the player prints
+nothing and simply decodes slower. Set `MTCODEC_NO_NATIVE=1` to force the Python
+path when comparing results.
 
 `deploy/mtb_app.py` is the entry point: when Windows passes a file path, it opens
 that file; with no argument it shows the file picker.

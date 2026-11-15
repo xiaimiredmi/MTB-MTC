@@ -13,6 +13,13 @@ All notable changes to this project. Format based on
 * **Full player controls.** Speed 0.5× / 1× / 1.5× / 2×, a draggable seek bar,
   volume 0–100, loop, and close-when-finished. Space toggles play/pause, ←/→
   seek one second, ↑/↓ change volume, Esc closes.
+* **Native Rust decoder.** `native/` is a Rust crate that implements the same
+  bit-level arithmetic block decoder behind a C ABI and decodes a whole plane
+  per call, so Python pays three FFI crossings per frame instead of ~38M calls
+  across a clip. Measured: `q_360p.mtc` (120 frames, 638×360) 21.10 s →
+  4.76 s (4.4×), `demo.mtc` 0.67 s → 0.30 s (2.2×). Per-frame SHA1 is
+  identical to the Python path. Missing `mtfastdec.dll` (or
+  `MTCODEC_NO_NATIVE=1`) falls back to pure Python with no behaviour change.
 * **Real audio speed and volume.** The embedded PCM is resampled and scaled
   with numpy, written to a temporary WAV and handed to the OS player
   (`winsound` on Windows, `aplay` on Linux, `afplay` on macOS), so speed and
