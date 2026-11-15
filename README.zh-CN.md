@@ -310,6 +310,15 @@ release/          预打包的 exe 与两个 zip（不入 git，发布时作为 
 
 ---
 
+## 反馈
+
+转换出错、格式疑问、想加功能，都可以直接联系。
+
+- 邮箱：xiaomitv14@outlook.com
+- 问题反馈：https://github.com/xiaimiredmi/MTB-MTC/issues
+
+报问题的时候，附上 `python -m mtcodec info xxx.mtb` 或 `python -m mtcodec video-info xxx.mtc` 的输出、原格式和你敲的命令，一般不用传文件也能定位。
+
 ## 许可
 
 MIT，见 [LICENSE](LICENSE)。

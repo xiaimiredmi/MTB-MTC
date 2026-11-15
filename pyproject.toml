@@ -9,7 +9,7 @@ description = "Pure-Python image (.mtb) and video (.mtc) codec with alpha, embed
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
-authors = [{ name = "The MTB-MTC Authors" }]
+authors = [{ name = "The MTB-MTC Authors", email = "xiaomitv14@outlook.com" }]
 keywords = ["codec", "image", "video", "compression", "dct", "arithmetic-coding"]
 classifiers = [
     "Programming Language :: Python :: 3",
@@ -32,9 +32,10 @@ build = ["pyinstaller>=6.0"]
 dev = ["pytest>=7.0"]
 
 [project.urls]
-Homepage = "https://github.com/your-name/MTB-MTC"
-Documentation = "https://github.com/your-name/MTB-MTC/tree/main/docs"
-Changelog = "https://github.com/your-name/MTB-MTC/blob/main/CHANGELOG.md"
+Homepage = "https://github.com/xiaimiredmi/MTB-MTC"
+Documentation = "https://github.com/xiaimiredmi/MTB-MTC/tree/main/docs"
+Changelog = "https://github.com/xiaimiredmi/MTB-MTC/blob/main/CHANGELOG.md"
+Issues = "https://github.com/xiaimiredmi/MTB-MTC/issues"
 
 [project.scripts]
 mtcodec = "mtcodec.cli:main"

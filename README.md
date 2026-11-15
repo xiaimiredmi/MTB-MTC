@@ -322,6 +322,18 @@ release/          prebuilt exe + two zips (git-ignored; attach to a Release)
 
 ---
 
+## Feedback
+
+Bug reports, format questions and feature requests are welcome.
+
+- Email: xiaomitv14@outlook.com
+- Issues: https://github.com/xiaimiredmi/MTB-MTC/issues
+
+When reporting a conversion problem, include the output of
+`python -m mtcodec info file.mtb` or `python -m mtcodec video-info file.mtc`,
+the source format, and the exact command you ran — that is usually enough to
+reproduce it without the file itself.
+
 ## License
 
 MIT. See [LICENSE](LICENSE).
