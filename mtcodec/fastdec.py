@@ -48,21 +48,52 @@ def _load():
     for path in _candidates():
         try:
             lib = ctypes.CDLL(path)
-            fn = lib.mt_dec_plane
-        except (OSError, AttributeError):
+        except OSError:
             continue
+        try:
+            fn = lib.mt_dec_recon_plane_p
+        except AttributeError:
+            try:
+                fn = lib.mt_dec_recon_plane
+            except AttributeError:
+                continue
+        try:
+            rgb = lib.mt_planes_rgb_p
+        except AttributeError:
+            rgb = lib.mt_planes_rgb
         fn.restype = ctypes.c_int
         fn.argtypes = [
             ctypes.c_void_p, ctypes.c_size_t,
             ctypes.POINTER(ctypes.c_size_t),
             ctypes.POINTER(ctypes.c_uint32),
             ctypes.POINTER(ctypes.c_uint32),
-            ctypes.c_void_p, ctypes.c_size_t,
-            ctypes.c_void_p,
-            ctypes.c_uint32, ctypes.c_uint32, ctypes.c_uint32,
-            ctypes.c_uint32,
-            ctypes.c_void_p,
+            ctypes.c_void_p, ctypes.c_void_p,
+            ctypes.c_uint32, ctypes.c_uint32, ctypes.c_uint32, ctypes.c_uint32,
+            ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p,
+            ctypes.c_int, ctypes.c_int,
         ]
+        rgb.restype = ctypes.c_int
+        rgb.argtypes = [
+            ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p,
+            ctypes.c_uint32, ctypes.c_uint32, ctypes.c_uint32,
+            ctypes.c_uint32, ctypes.c_uint32, ctypes.c_void_p,
+        ]
+        try:
+            plain = lib.mt_dec_plane
+            plain.restype = ctypes.c_int
+            plain.argtypes = [
+                ctypes.c_void_p, ctypes.c_size_t,
+                ctypes.POINTER(ctypes.c_size_t),
+                ctypes.POINTER(ctypes.c_uint32),
+                ctypes.POINTER(ctypes.c_uint32),
+                ctypes.c_void_p, ctypes.c_size_t, ctypes.c_void_p,
+                ctypes.c_uint32, ctypes.c_uint32, ctypes.c_uint32,
+                ctypes.c_uint32, ctypes.c_void_p,
+            ]
+        except AttributeError:
+            pass
+        lib._recon = fn
+        lib._rgb = rgb
         return lib, path
     return None, None
 
@@ -111,6 +142,7 @@ class PlaneDecoder:
             bytes(data))
 
     def decode_plane(self, pl, hb, wb, inter):
+        """Decode coefficients only (kept for the arithmetic self-check)."""
         if self.dec is None or self._buf is None:
             raise RuntimeError("native decoder not attached")
         pos = ctypes.c_size_t(self.dec.pos)
@@ -130,4 +162,50 @@ class PlaneDecoder:
         self.dec.code = int(cde.value)
         if rc != 0:
             raise RuntimeError("native decoder failed (rc=%d)" % rc)
+        return out
+
+    def decode_plane_pixels(self, pl, hb, wb, inter, step, pred, clip):
+        """Decode + dequantise + IDCT (+ prediction) + clip, straight to pixels."""
+        if self.dec is None or self._buf is None:
+            raise RuntimeError("native decoder not attached")
+        tab = np.ascontiguousarray(step, dtype=np.float64)
+        pos = ctypes.c_size_t(self.dec.pos)
+        rng = ctypes.c_uint32(self.dec.range)
+        cde = ctypes.c_uint32(self.dec.code)
+        out = np.zeros((hb * 8, wb * 8), np.int32)
+        pred_ptr = None
+        if pred is not None:
+            pred_arr = np.ascontiguousarray(pred, dtype=np.int32)
+            pred_ptr = ctypes.c_void_p(pred_arr.ctypes.data)
+        rc = _LIB._recon(
+            ctypes.c_void_p(ctypes.addressof(self._buf)), len(self._buf),
+            ctypes.byref(pos), ctypes.byref(rng), ctypes.byref(cde),
+            ctypes.c_void_p(self.probs.ctypes.data),
+            ctypes.c_void_p(self.offsets.ctypes.data),
+            int(pl), int(hb), int(wb), 1 if inter else 0,
+            ctypes.c_void_p(tab.ctypes.data), pred_ptr,
+            ctypes.c_void_p(out.ctypes.data),
+            int(clip[0]), int(clip[1]),
+        )
+        self.dec.pos = int(pos.value)
+        self.dec.range = int(rng.value)
+        self.dec.code = int(cde.value)
+        if rc != 0:
+            raise RuntimeError("native decoder failed (rc=%d)" % rc)
+        return out
+
+    def planes_to_rgb(self, planes, subsample, out_h, out_w):
+        ph, pw = planes[0].shape
+        out = np.zeros((out_h, out_w, 3), np.uint8)
+        arrs = [np.ascontiguousarray(p, dtype=np.int32) for p in planes]
+        rc = _LIB._rgb(
+            ctypes.c_void_p(arrs[0].ctypes.data),
+            ctypes.c_void_p(arrs[1].ctypes.data),
+            ctypes.c_void_p(arrs[2].ctypes.data),
+            int(ph), int(pw), 1 if subsample else 0,
+            int(out_h), int(out_w),
+            ctypes.c_void_p(out.ctypes.data),
+        )
+        if rc != 0:
+            raise RuntimeError("native rgb stage failed (rc=%d)" % rc)
         return out

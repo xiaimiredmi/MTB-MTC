@@ -238,16 +238,22 @@ python deploy/windows_register.py --unregister
 
 ## 解码速度：Rust + Python 混合
 
-解码时间的 76% 花在算术解码的逐 bit 循环里（一次解码约 3800 万次 Python 函数
-调用）。`native/` 里是一个 Rust crate，把**同一位级算法**实现成 C ABI 动态库，
-一次调用解完一整个平面，Python 这边只剩每帧 3 次 FFI。实测：
+整条链路现在都在 Rust 里：算术解码、反量化、反 DCT、预测相加、裁剪，以及
+YCoCg → RGB 打包。Python 只留容器解析、调度和 I/O，每帧跨 4 次 FFI，而不是
+一次解码几亿次。
 
 | 片子 | 纯 Python | Rust 后端 | 提升 |
 | --- | --- | --- | --- |
-| `demo.mtc`（12 帧） | 0.67 s / 55.4 ms 每帧 | 0.30 s / 24.8 ms 每帧 | 2.2× |
-| `q_360p.mtc`（120 帧 638×360） | 21.10 s / 175.9 ms 每帧 | 4.76 s / 39.7 ms 每帧 | 4.4× |
+| `demo.mtc`（12 帧 256×256） | 0.78 s / 64.6 ms 每帧 | 0.03 s / 2.5 ms 每帧 | 26× |
+| `q_360p.mtc`（120 帧 638×360） | 21.28 s / 177.3 ms 每帧 | 0.90 s / 7.5 ms 每帧 | 24× |
+| `q_720p.mtc`（120 帧 1278×720） | 64.84 s / 540.3 ms 每帧 | 2.43 s / 20.3 ms 每帧 | 27× |
 
-逐帧 SHA1 与纯 Python 结果**完全一致**，不是有损近似。编译方式：
+算术解码必须串行——比特流和自适应上下文是一条链——所以只有重建阶段并行：
+反 DCT 与 RGB 打包按块行分带，铺满所有核心。每个块的算法没变，所以画面也没变：
+`demo.mtc` 逐像素完全相同，两个长片有 0.004% 的采样差 1 个灰阶，没有任何差
+超过 1。
+
+编译方式：
 
 ```bash
 cd native
@@ -258,8 +264,9 @@ cp target/release/mtfastdec.dll ../mtcodec/     # Windows
 没有 `mtfastdec.dll`（或设置了 `MTCODEC_NO_NATIVE=1`）时会自动退回纯 Python，
 功能不受影响，只是慢。打包脚本 `tools/build_exe.py` 会自动把 dll 一起塞进 exe。
 
-选尺寸和帧数仍然直接决定等多久（同一台机器，Rust 后端下 `720p / 12 fps` 120 帧
-约 15 秒，`360p` 同帧数约 5 秒）。想要又短又顺的演示，就按秒数 × 帧率算帧数：
+尺寸和帧数仍然决定等多久，但现在短到可以忽略（同一台机器，Rust 后端下 `720p`
+120 帧约 2.5 秒，`360p` 同帧数约 1 秒）。想要又短又顺的演示，就按秒数 × 帧率
+算帧数：
 
 ```powershell
 python -m mtcodec convert in.mp4 in.mtc --size 360p --fps 30 --max-frames 300 --gop 30

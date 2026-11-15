@@ -251,18 +251,25 @@ window becomes the player — the bar hands over to the playback seek bar.
 
 ## Decode speed: Rust plus Python
 
-76% of decode time sat in the bit-by-bit arithmetic loop — roughly 38 million
-Python calls per clip. `native/` is a Rust crate implementing the *same*
-bit-level algorithm behind a C ABI: one call decodes a whole plane, so Python
-pays three FFI crossings per frame instead of millions.
+The whole pipeline now lives in Rust — entropy decoding, dequantisation,
+inverse DCT, prediction, clipping and the YCoCg → RGB pack. Python keeps the
+container, the schedule and the I/O; it crosses the FFI boundary four times
+per frame instead of hundreds of millions of times per clip.
 
 | Clip | Pure Python | Rust backend | Speedup |
 | --- | --- | --- | --- |
-| `demo.mtc` (12 frames) | 0.67 s / 55.4 ms per frame | 0.30 s / 24.8 ms per frame | 2.2× |
-| `q_360p.mtc` (120 frames, 638×360) | 21.10 s / 175.9 ms per frame | 4.76 s / 39.7 ms per frame | 4.4× |
+| `demo.mtc` (12 frames, 256×256) | 0.78 s / 64.6 ms per frame | 0.03 s / 2.5 ms per frame | 26× |
+| `q_360p.mtc` (120 frames, 638×360) | 21.28 s / 177.3 ms per frame | 0.90 s / 7.5 ms per frame | 24× |
+| `q_720p.mtc` (120 frames, 1278×720) | 64.84 s / 540.3 ms per frame | 2.43 s / 20.3 ms per frame | 27× |
 
-Per-frame SHA1 of both paths is **identical** — this is an exact speedup, not
-a lossy shortcut. Build it with:
+Entropy decoding has to stay serial — the bitstream and the adaptive contexts
+form one chain — so only reconstruction fans out: the IDCT and the RGB packing
+run on every core, one band of block rows per thread. The arithmetic per block
+is unchanged, so the picture is unchanged too. `demo.mtc` is bit-for-bit
+identical, the two longer clips differ on 0.004 % of samples by one grey level
+and never by more than one.
+
+Build it with:
 
 ```bash
 cd native
@@ -274,9 +281,10 @@ When `mtfastdec.dll` is absent (or `MTCODEC_NO_NATIVE=1` is set) the decoder
 falls back to pure Python automatically, so nothing breaks — it is just slower.
 `tools/build_exe.py` bundles the dll into both the onefile and onedir builds.
 
-Size and frame count still decide the wait (same machine, Rust backend:
-`720p / 12 fps` with 120 frames is about 15 s, `360p` with the same frame count
-about 5 s). For a short, smooth demo, pick frames = seconds × fps:
+Size and frame count still decide the wait, but the wait is now short enough to
+ignore (same machine, Rust backend: `720p` with 120 frames is about 2.5 s,
+`360p` with the same frame count about 1 s). For a short, smooth demo, pick
+frames = seconds × fps:
 
 ```powershell
 python -m mtcodec convert in.mp4 in.mtc --size 360p --fps 30 --max-frames 300 --gop 30

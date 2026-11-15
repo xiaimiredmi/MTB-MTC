@@ -1,0 +1,14 @@
+rc=0
+cargo : warning: linker stdout: 正在创建库 D:\MTB-MTC\native\target\release\deps\mtfastdec.dll.lib 和对象 D:\MTB-MTC\native\tar
+get\release\deps\mtfastdec.dll.exp
+所在位置 行:1 字符: 95
++ ... TC\native"; cargo build --release *> "D:\MTB-MTC\native\b3.log"; $rc= ...
++                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (warning: linker...fastdec.dll.exp:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+  |
+  = note: `#[warn(linker_messages)]` on by default
+
+warning: `mtfastdec` (lib) generated 1 warning
+    Finished `release` profile [optimized] target(s) in 0.03s

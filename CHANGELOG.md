@@ -13,12 +13,16 @@ All notable changes to this project. Format based on
 * **Full player controls.** Speed 0.5× / 1× / 1.5× / 2×, a draggable seek bar,
   volume 0–100, loop, and close-when-finished. Space toggles play/pause, ←/→
   seek one second, ↑/↓ change volume, Esc closes.
-* **Native Rust decoder.** `native/` is a Rust crate that implements the same
-  bit-level arithmetic block decoder behind a C ABI and decodes a whole plane
-  per call, so Python pays three FFI crossings per frame instead of ~38M calls
-  across a clip. Measured: `q_360p.mtc` (120 frames, 638×360) 21.10 s →
-  4.76 s (4.4×), `demo.mtc` 0.67 s → 0.30 s (2.2×). Per-frame SHA1 is
-  identical to the Python path. Missing `mtfastdec.dll` (or
+* **Native Rust decoder.** The whole decode pipeline — entropy decoding,
+  dequantisation, inverse DCT, prediction, clipping, YCoCg → RGB — runs in a
+  Rust cdylib called through a C ABI, four FFI crossings per frame instead of
+  hundreds of millions per clip. Measured on this machine: `demo.mtc`
+  64.6 → 2.5 ms per frame (26×), `q_360p.mtc` (120 frames, 638×360)
+  21.28 s → 0.90 s (24×), `q_720p.mtc` (120 frames, 1278×720) 64.84 s →
+  2.43 s (27×). Entropy decoding stays serial (one bitstream, one adaptive
+  context chain); the IDCT and RGB pack fan out across cores. Output is
+  unchanged: `demo.mtc` is bit-for-bit equal, the longer clips differ on
+  0.004 % of samples by one grey level. Missing `mtfastdec.dll` (or
   `MTCODEC_NO_NATIVE=1`) falls back to pure Python with no behaviour change.
 * **Real audio speed and volume.** The embedded PCM is resampled and scaled
   with numpy, written to a temporary WAV and handed to the OS player

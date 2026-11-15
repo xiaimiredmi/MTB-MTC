@@ -1,0 +1,4 @@
+demo.mtc exit=0 3.12s
+photo_c.mtb exit=0 4.03s
+q_360p.mtc exit=0 3.03s
+q_720p.mtc exit=0 4.10s

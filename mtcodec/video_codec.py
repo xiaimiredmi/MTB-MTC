@@ -227,19 +227,22 @@ def decode_video(data, collect=None, progress=None):
             if intra:
                 shape = shapes[i]
                 if fast is not None:
-                    qz = fast.decode_plane(i, shape[0] // 8, shape[1] // 8, False)
-                    recon.append(_recon(qz, s, None, i))
+                    recon.append(fast.decode_plane_pixels(
+                        i, shape[0] // 8, shape[1] // 8, False, s, None,
+                        color.CLIP[i]))
                 else:
                     recon.append(_dec_intra(dec, m, i, shape, s)[1])
             else:
                 if fast is not None:
-                    qz = fast.decode_plane(i, ref[i].shape[0] // 8,
-                                           ref[i].shape[1] // 8, True)
-                    pred = tf.blocks_of(ref[i].astype(np.float64))
-                    recon.append(_recon(qz, s, pred, i))
+                    recon.append(fast.decode_plane_pixels(
+                        i, ref[i].shape[0] // 8, ref[i].shape[1] // 8, True,
+                        s, ref[i], color.CLIP[i]))
                 else:
                     recon.append(_dec_inter(dec, mm, m, i, ref[i].shape, ref[i], s)[1])
-        frames.append(_planes_to_rgb(recon, bool(flag), h, w))
+        if fast is not None:
+            frames.append(fast.planes_to_rgb(recon, bool(flag), h, w))
+        else:
+            frames.append(_planes_to_rgb(recon, bool(flag), h, w))
         stats.append({"frame": len(frames) - 1, "type": "i" if intra else "p", "bytes": size + 5})
         ref = recon
         if progress is not None:
