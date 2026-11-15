@@ -6,6 +6,36 @@ All notable changes to this project. Format based on
 
 ---
 
+## [1.2.2] — 2026-11-15
+
+### Added
+
+* **Native Rust encoder.** Encoding used to be the slow half of the codec: a
+  4K frame took 11.2 s and a 1080p frame 3.18 s in pure Python, i.e. 45 minutes
+  for 240 4K frames and roughly 22 hours for a 14-minute 1080p clip. The
+  arithmetic coder, context modelling, FDCT/quantisation and inverse
+  DCT/reconstruction now live in the same `mtfastdec.dll`
+  (`mt_enc_new`, `mt_enc_plane`, `mt_enc_flush`, `mt_enc_quant_plane`,
+  `mt_enc_recon_plane`). Measured: 4K **11.2 → 1.53 s/frame**, 1080p
+  **3.18 → 0.43 s/frame**, a **7.3× speed-up**, with the entropy stage now only
+  14 % of a frame (1080p: prep 71 ms, quantise 115 ms, entropy 42 ms,
+  reconstruct 66 ms, RGB pack 2.5 ms).
+* **Byte-identical output.** Same frames and same initial probabilities through
+  the native and the pure-Python path produce the same md5
+  (`3a2428a5e438718cb0117b562fbfd293`, 67 547 bytes), so every existing `.mtc`
+  stays readable and both halves of the codec stay in lockstep. The reconstruction
+  fed back into prediction is bit-exact against the decoder (max diff 0), and
+  real footage at `-q 100` measures **50.5–53.7 dB PSNR** (max sample error 11–26).
+* **Streaming conversion.** `convert` used to read the whole clip into memory
+  (a 14-minute 1080p clip needs ≈150 GB) and kept every reconstructed frame
+  alive, so long clips ended in an allocation failure. `encode_video` now takes
+  any iterator, `io_bridge.iter_video_frames` pulls one frame at a time out of
+  ffmpeg, reconstructed frames are only retained when a caller asks for them,
+  and `convert` has a dedicated streaming path. Resident memory on that clip
+  drops to ≈300 MB and the encoder prints progress every 100 frames.
+* **No needless rescale.** When the source is already the target size the
+  `scale` filter is dropped from the ffmpeg pipeline.
+
 ## [1.2.1] — 2026-11-15
 
 ### Added

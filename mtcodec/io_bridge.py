@@ -154,6 +154,50 @@ def load_video_frames(path, fps=12, size_spec=None, max_frames=24, start=0):
     return frames, (tw, th)
 
 
+def video_target_size(path, size_spec=None):
+    """Even-rounded target size, identical to what the frame loaders use."""
+    src_w, src_h = probe_video(path)
+    tw, th = target_size(src_w, src_h, size_spec)
+    return tw - tw % 2, th - th % 2
+
+
+def iter_video_frames(path, fps=12, size_spec=None, max_frames=None, start=0):
+    """Yield frames one at a time so a long clip never has to fit in RAM."""
+    ff = ffmpeg_exe()
+    if ff is None:
+        raise RuntimeError("需要 ffmpeg 才能处理视频：请把 ffmpeg 加进 PATH")
+    src_w, src_h = probe_video(path)
+    tw, th = target_size(src_w, src_h, size_spec)
+    tw, th = tw - tw % 2, th - th % 2
+    if (tw, th) == (src_w, src_h):
+        vf = "fps=%s" % fps
+    else:
+        vf = "fps=%s,scale=%d:%d:flags=lanczos" % (fps, tw, th)
+    cmd = [ff, "-v", "error", "-ss", str(start), "-i", path, "-vf", vf,
+           "-pix_fmt", "rgb24", "-f", "rawvideo", "-"]
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE,
+                            stderr=subprocess.DEVNULL)
+    frame_bytes = tw * th * 3
+    n = 0
+    try:
+        while max_frames is None or max_frames <= 0 or n < max_frames:
+            buf = proc.stdout.read(frame_bytes)
+            if len(buf) < frame_bytes:
+                break
+            yield np.frombuffer(buf, np.uint8).reshape((th, tw, 3)).copy()
+            n += 1
+    finally:
+        try:
+            proc.stdout.close()
+        except Exception:
+            pass
+        try:
+            proc.terminate()
+        except Exception:
+            pass
+        proc.wait()
+
+
 def load_audio_wav(path, seconds=3.0):
     """抽音轨并统一成 44.1k 立体声 16bit WAV 字节；没有音轨返回 b''。"""
     ff = ffmpeg_exe()

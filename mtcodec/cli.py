@@ -70,6 +70,36 @@ def cmd_info(args):
     return 0
 
 
+def _convert_video_stream(args, out, t0):
+    """Video -> MTC without ever holding the whole clip in memory."""
+    tw, th = io_bridge.video_target_size(args.input, args.size)
+    audio = b""
+    if not args.no_audio:
+        secs = float(args.max_frames) / float(args.fps) if args.max_frames > 0 else 0.0
+        audio = io_bridge.load_audio_wav(args.input, seconds=secs)
+    gen = io_bridge.iter_video_frames(
+        args.input, fps=args.fps, size_spec=args.size,
+        max_frames=args.max_frames, start=args.start)
+
+    def _cb(n):
+        print("  ... %d frames  %.1fs" % (n, time.perf_counter() - t0), flush=True)
+
+    blob = encode_video(gen, quality=args.quality, subsample=args.subsample,
+                        gop=args.gop, fps=args.fps, audio=audio, progress=_cb)
+    dt = time.perf_counter() - t0
+    with open(out, "wb") as fh:
+        fh.write(blob)
+    info = probe_video(blob)
+    n = info["frames"]
+    raw = n * tw * th * 3
+    fps_note = "  audio %d bytes" % len(audio) if audio else "  no audio"
+    print("in   %s  %d frames  %dx%d%s" % (
+        os.path.basename(args.input), n, tw, th, fps_note))
+    print("out  %s  %d bytes  ratio %.2f:1  %.2fs" % (
+        out, len(blob), raw / len(blob), dt))
+    return 0
+
+
 def cmd_convert(args):
     """主流格式 -> MTB / MTC。"""
     ext = os.path.splitext(args.input)[1].lower()
@@ -81,6 +111,8 @@ def cmd_convert(args):
 
     t0 = time.perf_counter()
     audio = b""
+    if ext in io_bridge.VIDEO_EXTS and out_ext == EXT_VIDEO:
+        return _convert_video_stream(args, out, t0)
     if ext in io_bridge.IMAGE_EXTS:
         frames, has_alpha, src = io_bridge.load_image_frames(args.input, args.size)
     elif ext in io_bridge.VIDEO_EXTS:

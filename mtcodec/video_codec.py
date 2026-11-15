@@ -1,3 +1,4 @@
+import itertools
 import struct
 
 import numpy as np
@@ -5,6 +6,7 @@ import numpy as np
 from . import arithmetic as ac
 from . import color
 from . import fastdec
+from . import fastenc
 from . import transform as tf
 from .entropy import Model, ModeModel, dec_block, dec_skip, enc_block, enc_skip
 from .image_codec import _plane_step, _pad
@@ -129,45 +131,79 @@ def _planes_to_rgb(planes, subsample, out_h, out_w):
 
 
 def encode_video(frames, quality=85, subsample="420", gop=12, collect=None,
-                 fps=DEFAULT_FPS, audio=None):
-    frames = [np.asarray(f) for f in frames]
-    if not frames:
+                 fps=DEFAULT_FPS, audio=None, progress=None):
+    """Encode a stream of frames.
+
+    ``frames`` may be any iterable — a list, or a generator that pulls one
+    frame at a time from ffmpeg. Only the frames still needed for prediction
+    are kept alive, so multi-minute clips do not need tens of gigabytes of
+    RAM.
+    """
+    it = iter(frames)
+    try:
+        first = np.asarray(next(it))
+    except StopIteration:
         raise ValueError("empty frame list")
-    h, w = frames[0].shape[:2]
+    h, w = first.shape[:2]
     flag = 1 if subsample == "420" else 0
     mult = 16 if flag else 8
     step = tf.step_table(tf.quality_scale(quality))
     m = Model(3)
     mm = ModeModel(3)
+    fe = fastenc.PlaneEncoder(m, mm, 3) if fastenc.available() else None
     parts = []
     stats = []
     ref = None
     recon_frames = []
-    for idx, frame in enumerate(frames):
+    count = 0
+    for idx, frame in enumerate(itertools.chain((first,), it)):
         planes = _prep_frame(frame, mult, flag)
         intra = True
         if ref is not None and gop and idx % gop:
             if all(a.shape == b.shape for a, b in zip(planes, ref)):
                 sad = float(np.mean(np.abs(planes[0] - ref[0])))
                 intra = sad > SCENE_CUT_SAD
-        enc = ac.Encoder()
         recon = []
-        for i in range(3):
-            s = _plane_step(step, i)
-            if intra:
-                recon.append(_enc_intra(enc, m, i, planes[i], s)[1])
-            else:
-                recon.append(_enc_inter(enc, mm, m, i, planes[i], ref[i], s)[1])
-        payload = enc.flush()
+        if fe is not None:
+            qzs = []
+            for i in range(3):
+                s = _plane_step(step, i)
+                if intra:
+                    qz = fastenc.quantize_plane(planes[i], s)
+                    qzs.append(qz)
+                    recon.append(fastenc.recon_plane(qz, s, None, color.CLIP[i]))
+                else:
+                    qz = fastenc.quantize_plane(planes[i], s, ref[i].astype(np.float64))
+                    qzs.append(qz)
+                    flat = (qz == 0).all(axis=2)
+                    qz_eff = qz * (1 - flat[:, :, None])
+                    recon.append(fastenc.recon_plane(qz_eff, s, ref[i], color.CLIP[i]))
+            payload = fe.encode(qzs, not intra)
+        else:
+            enc = ac.Encoder()
+            for i in range(3):
+                s = _plane_step(step, i)
+                if intra:
+                    recon.append(_enc_intra(enc, m, i, planes[i], s)[1])
+                else:
+                    recon.append(_enc_inter(enc, mm, m, i, planes[i], ref[i], s)[1])
+            payload = enc.flush()
         parts.append(struct.pack("<BI", 0 if intra else 1, len(payload)) + payload)
         stats.append({"frame": idx, "type": "i" if intra else "p", "bytes": len(payload) + 5})
         ref = recon
-        recon_frames.append(_planes_to_rgb(recon, bool(flag), h, w))
+        count += 1
+        if collect is not None:
+            if fe is not None:
+                recon_frames.append(fastdec.planes_to_rgb(recon, bool(flag), h, w))
+            else:
+                recon_frames.append(_planes_to_rgb(recon, bool(flag), h, w))
+        if progress is not None and count % 100 == 0:
+            progress(count)
 
     audio = audio or b""
     fps100 = int(round(float(fps) * 100)) if fps else 0
     head = VHDR2.pack(VID_MAGIC, VID_VERSION, flag, int(quality), int(gop), w, h,
-                      len(frames), fps100)
+                      count, fps100)
     head += struct.pack("<I", len(audio)) + audio
     if collect is not None:
         collect["frames"] = recon_frames

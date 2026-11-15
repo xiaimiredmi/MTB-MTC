@@ -105,6 +105,26 @@ def available():
     return _LIB is not None
 
 
+def planes_to_rgb(planes, subsample, out_h, out_w):
+    """YCgCo planes -> packed RGB through the native stage."""
+    if _LIB is None:
+        raise RuntimeError("native library not available")
+    ph, pw = planes[0].shape
+    out = np.zeros((out_h, out_w, 3), np.uint8)
+    arrs = [np.ascontiguousarray(p, dtype=np.int32) for p in planes]
+    rc = _LIB._rgb(
+        ctypes.c_void_p(arrs[0].ctypes.data),
+        ctypes.c_void_p(arrs[1].ctypes.data),
+        ctypes.c_void_p(arrs[2].ctypes.data),
+        int(ph), int(pw), 1 if subsample else 0,
+        int(out_h), int(out_w),
+        ctypes.c_void_p(out.ctypes.data),
+    )
+    if rc != 0:
+        raise RuntimeError("native rgb stage failed (rc=%d)" % rc)
+    return out
+
+
 class PlaneDecoder:
     """Decode planes of one clip through the native library.
 

@@ -807,3 +807,395 @@ unsafe fn rgb_band_from(rows: usize, base: usize, share: &RgbShare, dst: *mut u8
         }
     }
 }
+
+/* -------------------------- encoder -------------------------- */
+/* Exact mirror of mtcodec/arithmetic.py + mtcodec/entropy.py on the encode
+   side: same 11-bit probabilities, same 5-bit adaptation, same symbol order,
+   so the bytes match the Python encoder exactly. */
+
+const P_BITS: u32 = 11;
+const P_TOTAL: u64 = 2048;
+const ENC_MOVE_BITS: u32 = 5;
+const LOW_TOP: u32 = 1 << 24;
+const ENC_MASK32: u64 = 0xFFFF_FFFF;
+const PROBS_PER_PLANE: usize = 371;
+
+pub struct Enc {
+    low: u64,
+    range: u32,
+    cache: u64,
+    cache_size: u32,
+    out: Vec<u8>,
+}
+
+impl Enc {
+    fn new() -> Enc {
+        Enc {
+            low: 0,
+            range: ENC_MASK32 as u32,
+            cache: 0,
+            cache_size: 1,
+            out: Vec::with_capacity(4096),
+        }
+    }
+
+    #[inline]
+    fn shift_low(&mut self) {
+        let low = self.low;
+        if low < 0xFF00_0000 || low > ENC_MASK32 {
+            let carry = (low >> 32) as u8;
+            self.out.push(self.cache.wrapping_add(carry as u64) as u8);
+            let n = self.cache_size - 1;
+            if n > 0 {
+                let byte = 0xFFu8.wrapping_add(carry);
+                for _ in 0..n {
+                    self.out.push(byte);
+                }
+            }
+            self.cache = (low >> 24) & 0xFF;
+            self.cache_size = 0;
+        }
+        self.cache_size += 1;
+        self.low = ((low & ENC_MASK32) << 8) & ENC_MASK32;
+    }
+
+    #[inline]
+    fn encode(&mut self, probs: &mut [i16], idx: usize, bit: u32) {
+        let p = probs[idx] as u64;
+        let bound = ((self.range >> P_BITS) as u64) * p;
+        if bit != 0 {
+            self.low += bound;
+            self.range -= bound as u32;
+            probs[idx] = (p - (p >> ENC_MOVE_BITS)) as i16;
+        } else {
+            self.range = bound as u32;
+            probs[idx] = (p + ((P_TOTAL - p) >> ENC_MOVE_BITS)) as i16;
+        }
+        while self.range < LOW_TOP {
+            self.range <<= 8;
+            self.shift_low();
+        }
+    }
+
+    fn finish(mut self) -> Vec<u8> {
+        for _ in 0..5 {
+            self.shift_low();
+        }
+        self.out
+    }
+}
+
+#[inline]
+fn bit_len(v: i32) -> u32 {
+    if v <= 0 {
+        return 0;
+    }
+    let mut n = 0u32;
+    let mut x = v;
+    while x > 0 {
+        n += 1;
+        x >>= 1;
+    }
+    n
+}
+
+fn enc_tree(e: &mut Enc, probs: &mut [i16], base: usize, bits: u32, value: i32) {
+    let mut node = 1usize;
+    let mut i = bits as i32 - 1;
+    while i >= 0 {
+        let bit = ((value >> i) & 1) as u32;
+        e.encode(probs, base + node, bit);
+        node = (node << 1) | bit as usize;
+        i -= 1;
+    }
+}
+
+fn enc_bits(e: &mut Enc, probs: &mut [i16], base: usize, count: u32, value: i32) {
+    let mut i = count as i32 - 1;
+    while i >= 0 {
+        let bit = ((value >> i) & 1) as u32;
+        e.encode(probs, base + i as usize, bit);
+        i -= 1;
+    }
+}
+
+fn enc_block(
+    e: &mut Enc,
+    probs: &mut [i16],
+    pl: usize,
+    planes: usize,
+    qc: &[i32],
+    prev_dc: i32,
+) {
+    let b_dc_cls = 0usize;
+    let b_dc_sign = 16 * planes;
+    let b_dc_extra = 17 * planes;
+    let b_last = 33 * planes;
+    let b_sig = 97 * planes;
+    let b_ac_cls = 105 * planes;
+    let b_ac_sign = 233 * planes;
+    let b_ac_extra = 241 * planes;
+
+    let mut d = qc[0] - prev_dc;
+    let mut sign = 0u32;
+    if d < 0 {
+        d = -d;
+        sign = 1;
+    }
+    let c = bit_len(d);
+    enc_tree(e, probs, b_dc_cls + pl * 16, 4, c as i32);
+    if c > 0 {
+        e.encode(probs, b_dc_sign + pl, sign);
+        if c > 1 {
+            enc_bits(e, probs, b_dc_extra + pl * 16, c - 1, d - (1 << (c - 1)));
+        }
+    }
+
+    let mut last = 0usize;
+    let mut i = 63usize;
+    while i >= 1 {
+        if qc[i] != 0 {
+            last = i;
+            break;
+        }
+        i -= 1;
+    }
+    enc_tree(e, probs, b_last + pl * 64, 6, last as i32);
+
+    let mut k = 1usize;
+    while k <= last {
+        let mut v = qc[k];
+        let sidx = pl * 8 + (k >> 3);
+        if v != 0 {
+            e.encode(probs, b_sig + sidx, 1);
+            let mut sg = 0u32;
+            if v < 0 {
+                v = -v;
+                sg = 1;
+            }
+            let c2 = bit_len(v);
+            enc_tree(e, probs, b_ac_cls + sidx * 16, 4, c2 as i32);
+            e.encode(probs, b_ac_sign + sidx, sg);
+            if c2 > 1 {
+                enc_bits(e, probs, b_ac_extra + sidx * 16, c2 - 1, v - (1 << (c2 - 1)));
+            }
+        } else {
+            e.encode(probs, b_sig + sidx, 0);
+        }
+        k += 1;
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn mt_enc_new() -> *mut Enc {
+    Box::into_raw(Box::new(Enc::new()))
+}
+
+#[no_mangle]
+pub extern "C" fn mt_enc_plane(
+    e_ptr: *mut Enc,
+    qc_ptr: *const i32,
+    hb: u32,
+    wb: u32,
+    probs_ptr: *mut i16,
+    planes: u32,
+    pl: u32,
+    inter: u32,
+) -> i32 {
+    if e_ptr.is_null() || qc_ptr.is_null() || probs_ptr.is_null() {
+        return -1;
+    }
+    let nb = hb as usize * wb as usize;
+    let pls = planes as usize;
+    let e = unsafe { &mut *e_ptr };
+    let qc = unsafe { std::slice::from_raw_parts(qc_ptr, nb * 64) };
+    let probs = unsafe { std::slice::from_raw_parts_mut(probs_ptr, PROBS_PER_PLANE * pls) };
+    let hb = hb as usize;
+    let wb = wb as usize;
+    let pl = pl as usize;
+    let b_skip = 369 * pls;
+
+    for r in 0..hb {
+        let mut prev = 0i32;
+        let mut left_skip = 0usize;
+        for c in 0..wb {
+            let off = (r * wb + c) * 64;
+            let blk = &qc[off..off + 64];
+            if inter != 0 {
+                let mut skip = true;
+                for v in blk.iter() {
+                    if *v != 0 {
+                        skip = false;
+                        break;
+                    }
+                }
+                e.encode(probs, b_skip + pl * 2 + left_skip, if skip { 1 } else { 0 });
+                if skip {
+                    left_skip = 1;
+                    continue;
+                }
+                enc_block(e, probs, pl, pls, blk, prev);
+                prev = blk[0];
+                left_skip = 0;
+            } else {
+                enc_block(e, probs, pl, pls, blk, prev);
+                prev = blk[0];
+            }
+        }
+    }
+    0
+}
+
+#[no_mangle]
+pub extern "C" fn mt_enc_flush(e_ptr: *mut Enc, out_len: *mut usize) -> *mut u8 {
+    if e_ptr.is_null() || out_len.is_null() {
+        return std::ptr::null_mut();
+    }
+    let e = unsafe { Box::from_raw(e_ptr) };
+    let bytes = e.finish();
+    let len = bytes.len();
+    let ptr = bytes.as_ptr() as *mut u8;
+    std::mem::forget(bytes);
+    unsafe {
+        *out_len = len;
+    }
+    ptr
+}
+
+#[no_mangle]
+pub extern "C" fn mt_enc_free(ptr: *mut u8, len: usize) {
+    if ptr.is_null() || len == 0 {
+        return;
+    }
+    unsafe {
+        drop(Vec::from_raw_parts(ptr, len, len));
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn mt_enc_quant_plane(
+    plane: *const f64,
+    hb: u32,
+    wb: u32,
+    step: *const f64,
+    pred: *const f64,
+    out_qz: *mut i32,
+) -> i32 {
+    if plane.is_null() || step.is_null() || out_qz.is_null() {
+        return -1;
+    }
+    let hb = hb as usize;
+    let wb = wb as usize;
+    let pw = wb * 8;
+    let ph = hb * 8;
+    let m = dct_matrix();
+    let zz = zigzag();
+    let mut st = [[0.0f64; 8]; 8];
+    for u in 0..8usize {
+        for v in 0..8usize {
+            st[u][v] = unsafe { *step.add(u * 8 + v) };
+        }
+    }
+    let src = unsafe { std::slice::from_raw_parts(plane, ph * pw) };
+    let pre = if pred.is_null() {
+        None
+    } else {
+        Some(unsafe { std::slice::from_raw_parts(pred, ph * pw) })
+    };
+    let out = unsafe { std::slice::from_raw_parts_mut(out_qz, hb * wb * 64) };
+
+    for r in 0..hb {
+        for c in 0..wb {
+            let mut blk = [[0.0f64; 8]; 8];
+            for x in 0..8usize {
+                let row = (r * 8 + x) * pw + c * 8;
+                for y in 0..8usize {
+                    let mut v = src[row + y];
+                    if let Some(p) = pre {
+                        v -= p[row + y];
+                    }
+                    blk[x][y] = v;
+                }
+            }
+            let mut coeff = [[0.0f64; 8]; 8];
+            for u in 0..8usize {
+                for v in 0..8usize {
+                    let mut s = 0.0f64;
+                    for x in 0..8usize {
+                        let mut t = 0.0f64;
+                        for y in 0..8usize {
+                            t += blk[x][y] * m[v][y];
+                        }
+                        s += m[u][x] * t;
+                    }
+                    coeff[u][v] = s;
+                }
+            }
+            let base = (r * wb + c) * 64;
+            for k in 0..64usize {
+                let (u, v) = zz[k];
+                out[base + k] = rint(coeff[u][v] / st[u][v]) as i32;
+            }
+        }
+    }
+    0
+}
+
+#[no_mangle]
+pub extern "C" fn mt_enc_recon_plane(
+    qz: *const i32,
+    hb: u32,
+    wb: u32,
+    step: *const f64,
+    pred: *const i32,
+    out_plane: *mut i32,
+    clip_lo: i32,
+    clip_hi: i32,
+) -> i32 {
+    if qz.is_null() || step.is_null() || out_plane.is_null() {
+        return -1;
+    }
+    let hb = hb as usize;
+    let wb = wb as usize;
+    let pw = wb * 8;
+    let ph = hb * 8;
+    let m = dct_matrix();
+    let zz = zigzag();
+    let mut st = [[0.0f64; 8]; 8];
+    for u in 0..8usize {
+        for v in 0..8usize {
+            st[u][v] = unsafe { *step.add(u * 8 + v) };
+        }
+    }
+    let q = unsafe { std::slice::from_raw_parts(qz, hb * wb * 64) };
+    let pre = if pred.is_null() {
+        None
+    } else {
+        Some(unsafe { std::slice::from_raw_parts(pred, ph * pw) })
+    };
+    let out = unsafe { std::slice::from_raw_parts_mut(out_plane, ph * pw) };
+
+    for r in 0..hb {
+        for c in 0..wb {
+            let base = (r * wb + c) * 64;
+            let mut coeff = [[0.0f64; 8]; 8];
+            for k in 0..64usize {
+                let (u, v) = zz[k];
+                coeff[u][v] = q[base + k] as f64 * st[u][v];
+            }
+            let mut blk = [[0.0f64; 8]; 8];
+            idct_block(&coeff, &m, &mut blk);
+            for x in 0..8usize {
+                let row = (r * 8 + x) * pw + c * 8;
+                for y in 0..8usize {
+                    let mut v = blk[x][y];
+                    if let Some(p) = pre {
+                        v += p[row + y] as f64;
+                    }
+                    out[row + y] = (rint(v) as i32).clamp(clip_lo, clip_hi);
+                }
+            }
+        }
+    }
+    0
+}
