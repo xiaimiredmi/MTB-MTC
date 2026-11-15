@@ -357,6 +357,16 @@ class Player(object):
         self._togs = []
         self._cur = 0
 
+        hf, wf = self.frames[0].shape[:2]
+        try:
+            sw = min(max(640, wf + 24), 1200)
+            sh = int(round(sw * hf / float(wf))) + 112
+            sw = min(sw, self.root.winfo_screenwidth() - 80)
+            sh = min(sh, self.root.winfo_screenheight() - 100)
+            self.root.geometry("%dx%d" % (sw, sh))
+        except Exception:
+            pass
+
         self.image_label = tk.Label(self.root, bg="#0B0D10", bd=0,
                                     highlightthickness=0)
         self.image_label.pack(fill="both", expand=True)
@@ -725,19 +735,32 @@ def open_path(path):
     auto = int(os.environ.get("MTCODEC_VIEWER_AUTOCLOSE_MS", "0") or 0)
 
     if kind == "image":
-        root.title(os.path.basename(path))
+        root.title(os.path.basename(path) + "  —  MTB")
         root.configure(bg=BG)
-        label = tk.Label(root, bg=BG, bd=0, highlightthickness=0)
+        root.minsize(320, 240)
+        label = tk.Label(root, bg="#0B0D10", bd=0, highlightthickness=0)
         label.pack(fill="both", expand=True)
-        img = Image.fromarray(decode_image(blob))
-        scale = min(MAX_W / float(img.width), MAX_H / float(img.height), 1.0)
-        if scale < 1.0:
-            img = img.resize((int(img.width * scale), int(img.height * scale)),
-                             Image.LANCZOS)
-        ph = ImageTk.PhotoImage(img)
-        label.configure(image=ph)
-        label.image = ph
+        src = Image.fromarray(decode_image(blob))
+        w0, h0 = src.size
+        holder = {"img": src, "photo": None}
+
+        def _paint(_event=None):
+            ax = label.winfo_width()
+            ay = label.winfo_height()
+            if ax <= 8 or ay <= 8:
+                ax, ay = w0, h0
+            s = min(ax / float(src.width), ay / float(src.height))
+            tw = max(1, int(round(src.width * s)))
+            th = max(1, int(round(src.height * s)))
+            if tw > src.width * 3:
+                tw, th = src.width, src.height
+            img = src if (tw, th) == src.size else src.resize((tw, th), Image.LANCZOS)
+            holder["photo"] = ImageTk.PhotoImage(img)
+            label.configure(image=holder["photo"])
+
+        label.bind("<Configure>", _paint)
         root.bind("<Escape>", lambda e: root.destroy())
+        root.after(50, _paint)
 
         def _close_img():
             try:

@@ -17,6 +17,13 @@ All notable changes to this project. Format based on
   with numpy, written to a temporary WAV and handed to the OS player
   (`winsound` on Windows, `aplay` on Linux, `afplay` on macOS), so speed and
   gain need no extra dependency (no pygame, no sounddevice).
+* **Pitch-preserving speed.** Speed now runs through ffmpeg's `atempo` filter
+  on the whole track, so 0.5× / 1.5× / 2× change tempo without touching the
+  pitch. Verified with a 440 Hz tone: the spectral peak stays at 440 Hz at all
+  four speeds (0.5× 1.97 s, 1.5× 0.67 s, 2× 0.50 s). Without ffmpeg the player
+  falls back to linear interpolation and the window says the pitch will move.
+  Speed WAVs are built on a worker thread and cached per speed, so switching
+  speed never blocks the UI.
 * **Live decode progress bar.** Opening a clip shows a progress bar, a
   percentage, and the frame currently being decoded; when decoding finishes
   that same window becomes the player, so the bar hands over to the playback
@@ -28,9 +35,14 @@ All notable changes to this project. Format based on
   `time.monotonic()` and scheduled to the next frame boundary, instead of
   chaining a fixed `after(1000/fps)`, so a long clip no longer drifts slower
   and slower.
-* **Lower memory, smoother painting.** Frames are scaled to at most 960×720
-  immediately after decoding and turned into `PhotoImage` lazily through a
-  32-frame LRU cache, instead of pre-building every full-size frame.
+* **Resolution-preserving display.** Frames keep their decoded size (only
+  scaled down once above 1600 px) and are fitted to the window with LANCZOS,
+  so the window can be dragged larger or smaller and zooming in no longer
+  turns detail into mush. Still images do the same and open at their native
+  resolution.
+* **Redrawn player UI.** Dark flat skin with hand-drawn chips for speed, loop
+  and close-when-finished, a self-drawn seek bar with a round handle, and a
+  fixed-width time readout.
 * `tools/build_exe.py --onedir` builds a folder bundle. Measured on the dev
   machine, start-to-close on the same sample: onefile 6.1–9.2 s, onedir
   4.1–6.1 s (both include a 1.2 s auto-close timer plus the decode step).

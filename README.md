@@ -232,10 +232,18 @@ just the file name. The bottom bar only carries playback controls.
 | Close when finished | tick "Close when done" |
 | Close the window | **Esc** |
 
-Speed and volume are applied to the embedded PCM itself: samples are resampled
-and scaled in numpy, written to a temporary WAV and handed to the system player,
-so no extra audio library is needed. The play clock is monotonic and scheduled
-to the next frame boundary, so a long clip keeps its pace instead of drifting.
+Speed uses ffmpeg's `atempo` filter on the whole track, so the pitch never
+moves: 0.5× is not slowed-down bass and 2× is not a squeak (measured with a
+440 Hz tone — the peak stays at 440 Hz at 1×, 0.5×, 1.5× and 2×). Volume is a
+numpy gain written into a temporary WAV and handed to the system player, so no
+extra audio library is needed. Machines without ffmpeg fall back to linear
+interpolation, which does shift the pitch, and the window says so. The play
+clock is monotonic and scheduled to the next frame boundary, so a long clip
+keeps its pace instead of drifting.
+
+Frames keep their decoded resolution and are scaled to the window with
+LANCZOS, so you can drag the window as large or small as you like and detail
+stays sharp.
 
 Opening a clip never leaves the window blank: it shows a progress bar, a
 percentage, and the frame being decoded, and once decoding ends that same
