@@ -1023,7 +1023,8 @@ def open_path(path):
     vaudio = head.get("audio") or b""
     stream = None
     pix = total_n * int(head.get("w") or 0) * int(head.get("h") or 0)
-    if pix > 900000000:
+    # H.264 数据解码只要二十来毫秒一帧，全解纯属白等；一律流式，窗口立刻出来。
+    if head.get("codec") == "h264" or pix > 900000000:
         stream = StreamFrames(blob, total_n, (head["h"], head["w"]), vfps, vaudio)
 
     def worker():

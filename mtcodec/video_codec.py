@@ -8,17 +8,29 @@ from . import arithmetic as ac
 from . import color
 from . import fastdec
 from . import fastenc
+from . import h264
+from . import motion
 from . import transform as tf
 from .entropy import Model, ModeModel, dec_block, dec_skip, enc_block, enc_skip
 from .image_codec import _plane_step, _pad
 
 VID_MAGIC = b"MTC1"
-VID_VERSION = 2
+VID_VERSION = 4
 VHDR = struct.Struct("<4sBBBBHHI")
 VHDR2 = struct.Struct("<4sBBBBHHII")
 
+# version 2: co-located prediction only. version 3: adds a per-frame motion
+# vector table. version 4: the video payload is an H.264 stream.
+ME_VERSION = 3
+H264_VERSION = 4
+VERSIONS_HEAD2 = (2, 3, 4)
+
 SCENE_CUT_SAD = 24.0
 DEFAULT_FPS = 24.0
+# 关掉这一项就退回旧的同位预测。实测块级 ME 在这类素材上只省 3.5%
+# 体积，PSNR 反而掉 1.7 dB，编码还慢 4.8 倍，所以默认关闭，代码留作
+# 以后换成原生实现时参考。
+ME_ON = False
 
 # 三个平面彼此独立，交给 Rust 后 GIL 已释放，可以真并行跑。
 _POOL = ThreadPoolExecutor(max_workers=3, thread_name_prefix="mtc-enc")
@@ -137,15 +149,80 @@ def _planes_to_rgb(planes, subsample, out_h, out_w):
     return color.to_uint8(np.stack([r, g, b], axis=2)[:out_h, :out_w])
 
 
+def _predict_from(ref, mvs):
+    """Rebuild the prediction planes from a reference frame and a vector table."""
+    chroma = motion.scale(mvs, 2)
+    return [
+        motion.predict(ref[0], mvs, motion.BLOCK),
+        motion.predict(ref[1], chroma, motion.BLOCK // 2),
+        motion.predict(ref[2], chroma, motion.BLOCK // 2),
+    ]
+
+
+def _predict_planes(planes, ref):
+    """Motion-compensated prediction planes plus the vector table.
+
+    Both the quantiser and the reconstruction use the planes returned here, and
+    the decoder rebuilds them from the same table, so the two sides stay in
+    lockstep.
+    """
+    if not ME_ON:
+        return [ref[i] for i in range(3)], None
+    if planes[0].shape != ref[0].shape:
+        return [ref[i] for i in range(3)], None
+    mvs = motion.search(planes[0], ref[0])
+    return _predict_from(ref, mvs), mvs
+
+
+def _encode_h264(frames, quality, fps, audio, gop, collect, progress):
+    """Wrap an x264 stream in the MTC container."""
+    it = iter(frames)
+    try:
+        first = np.asarray(next(it))
+    except StopIteration:
+        raise ValueError("empty frame list")
+    h, w = first.shape[:2]
+    count = [0]
+
+    def wrapped():
+        for frame in itertools.chain((first,), it):
+            count[0] += 1
+            if progress is not None and count[0] % 100 == 0:
+                progress(count[0])
+            yield frame
+
+    if fps:
+        stream = h264.encode(wrapped(), w, h, fps, quality,
+                             keyint=(gop * 12) if gop else 250)
+    else:
+        stream = h264.encode(wrapped(), w, h, DEFAULT_FPS, quality,
+                             keyint=(gop * 12) if gop else 250)
+    fps100 = int(round(float(fps) * 100)) if fps else 0
+    head = VHDR2.pack(VID_MAGIC, H264_VERSION, 1, int(quality), int(gop), w, h,
+                      count[0], fps100)
+    audio = audio or b""
+    head += struct.pack("<I", len(audio)) + audio
+    if collect is not None:
+        collect["frames"] = list(h264.decode(stream, w, h, fps or DEFAULT_FPS))
+        collect["stats"] = []
+    return head + stream
+
+
 def encode_video(frames, quality=85, subsample="420", gop=12, collect=None,
-                 fps=DEFAULT_FPS, audio=None, progress=None):
+                 fps=DEFAULT_FPS, audio=None, progress=None, codec="h264"):
     """Encode a stream of frames.
+
+    ``codec`` selects the video backend: ``"h264"`` (the default, through
+    ffmpeg/x264) or ``"dct"`` (the original in-house transform coder).
 
     ``frames`` may be any iterable — a list, or a generator that pulls one
     frame at a time from ffmpeg. Only the frames still needed for prediction
     are kept alive, so multi-minute clips do not need tens of gigabytes of
     RAM.
     """
+    if codec == "h264" and h264.available():
+        return _encode_h264(frames, quality, fps, audio, gop, collect, progress)
+
     it = iter(frames)
     try:
         first = np.asarray(next(it))
@@ -176,6 +253,7 @@ def encode_video(frames, quality=85, subsample="420", gop=12, collect=None,
                 sad = float(np.mean(np.abs(planes[0] - ref[0])))
                 intra = sad > SCENE_CUT_SAD
         recon = []
+        mvs = None
         if fe is not None:
             steps = [_plane_step(step, i) for i in range(3)]
             if intra:
@@ -185,7 +263,8 @@ def encode_video(frames, quality=85, subsample="420", gop=12, collect=None,
                     lambda i: fastenc.recon_plane(qzs[i], steps[i], None, color.CLIP[i]),
                     range(3)))
             else:
-                preds = [ref[i].astype(np.float64) for i in range(3)]
+                preds_i, mvs = _predict_planes(planes, ref)
+                preds = [p.astype(np.float64) for p in preds_i]
                 qzs = list(_POOL.map(
                     lambda i: fastenc.quantize_plane(planes[i], steps[i], preds[i]),
                     range(3)))
@@ -194,16 +273,18 @@ def encode_video(frames, quality=85, subsample="420", gop=12, collect=None,
                     flat = (qz == 0).all(axis=2)
                     qz_effs.append(qz * (1 - flat[:, :, None]))
                 recon = list(_POOL.map(
-                    lambda i: fastenc.recon_plane(qz_effs[i], steps[i], ref[i], color.CLIP[i]),
+                    lambda i: fastenc.recon_plane(qz_effs[i], steps[i], preds_i[i],
+                                                  color.CLIP[i]),
                     range(3)))
             if pending is not None:
-                fut, p_intra, p_idx = pending
-                payload = fut.result()
+                fut, p_intra, p_idx, p_mv = pending
+                payload = p_mv + fut.result()
                 parts.append(struct.pack("<BI", 0 if p_intra else 1, len(payload)) + payload)
                 stats.append({"frame": p_idx, "type": "i" if p_intra else "p",
                               "bytes": len(payload) + 5})
                 pending = None
-            pending = (_ENT_POOL.submit(fe.encode, qzs, not intra), intra, idx)
+            mv_blob = motion.pack(mvs) if mvs is not None else b""
+            pending = (_ENT_POOL.submit(fe.encode, qzs, not intra), intra, idx, mv_blob)
         else:
             enc = ac.Encoder()
             for i in range(3):
@@ -227,8 +308,8 @@ def encode_video(frames, quality=85, subsample="420", gop=12, collect=None,
             progress(count)
 
     if pending is not None:
-        fut, p_intra, p_idx = pending
-        payload = fut.result()
+        fut, p_intra, p_idx, p_mv = pending
+        payload = p_mv + fut.result()
         parts.append(struct.pack("<BI", 0 if p_intra else 1, len(payload)) + payload)
         stats.append({"frame": p_idx, "type": "i" if p_intra else "p",
                       "bytes": len(payload) + 5})
@@ -255,8 +336,9 @@ def _parse_heads(data):
         "flag": flag, "quality": quality, "gop": gop,
         "w": w, "h": h, "nframes": nframes,
         "audio": b"", "fps": DEFAULT_FPS, "pos": VHDR.size,
+        "me": False, "codec": "dct",
     }
-    if ver == VID_VERSION:
+    if ver in VERSIONS_HEAD2:
         magic, ver, flag, quality, gop, w, h, nframes, fps100 = VHDR2.unpack(data[: VHDR2.size])
         pos = VHDR2.size
         alen = struct.unpack("<I", data[pos : pos + 4])[0]
@@ -266,6 +348,8 @@ def _parse_heads(data):
             "audio": data[pos + 4 : pos + 4 + alen],
             "fps": (fps100 / 100.0) if fps100 else DEFAULT_FPS,
             "pos": pos + 4 + alen,
+            "me": ver == ME_VERSION,
+            "codec": "h264" if ver >= H264_VERSION else "dct",
         })
     elif ver != 1:
         raise ValueError("unsupported version")
@@ -281,6 +365,18 @@ def iter_frames(data, progress=None, limit=None, stat_sink=None, head=None):
     h = info["h"]
     nframes = info["nframes"]
     pos = info["pos"]
+    if info.get("codec") == "h264":
+        fps = info.get("fps") or DEFAULT_FPS
+        n = 0
+        for n, rgb in enumerate(h264.decode(data[pos:], w, h, fps, limit), 1):
+            if stat_sink is not None:
+                stat_sink.append({"frame": n - 1, "type": "x", "bytes": 0})
+            if progress is not None:
+                progress(n, nframes, rgb)
+            yield rgb
+            if limit is not None and n >= limit:
+                break
+        return
     step = tf.step_table(tf.quality_scale(info["quality"]))
     m = Model(3)
     mm = ModeModel(3)
@@ -294,8 +390,16 @@ def iter_frames(data, progress=None, limit=None, stat_sink=None, head=None):
         pos += 5
         payload = data[pos : pos + size]
         pos += size
-        dec = ac.Decoder(payload)
         intra = ftype == 0
+        mvs = None
+        if not intra and info.get("me") and ref is not None:
+            nbh = ref[0].shape[0] // motion.BLOCK
+            nbw = ref[0].shape[1] // motion.BLOCK
+            need = nbh * nbw * 2
+            if len(payload) >= need:
+                mvs = motion.unpack(payload[:need], nbh, nbw)
+                payload = payload[need:]
+        dec = ac.Decoder(payload)
         shapes = None
         if intra:
             if flag:
@@ -307,6 +411,9 @@ def iter_frames(data, progress=None, limit=None, stat_sink=None, head=None):
                 pw = -(-w // 8) * 8
                 shapes = [(ph, pw)] * 3
         recon = []
+        preds_i = None
+        if not intra and mvs is not None and ref is not None:
+            preds_i = _predict_from(ref, mvs)
         if fast is not None:
             fast.attach(dec)
         for i in range(3):
@@ -320,10 +427,15 @@ def iter_frames(data, progress=None, limit=None, stat_sink=None, head=None):
                 else:
                     recon.append(_dec_intra(dec, m, i, shape, s)[1])
             else:
+                if mvs is not None and fast is None:
+                    raise RuntimeError(
+                        "this stream uses motion compensation and needs the "
+                        "native decoder")
+                pred = preds_i[i] if preds_i is not None else ref[i]
                 if fast is not None:
                     recon.append(fast.decode_plane_pixels(
                         i, ref[i].shape[0] // 8, ref[i].shape[1] // 8, True,
-                        s, ref[i], color.CLIP[i]))
+                        s, pred, color.CLIP[i]))
                 else:
                     recon.append(_dec_inter(dec, mm, m, i, ref[i].shape, ref[i], s)[1])
         if fast is not None:
@@ -368,9 +480,17 @@ def probe_video(data):
         "height": h,
         "frames": nframes,
     }
-    if ver == VID_VERSION:
+    if ver in VERSIONS_HEAD2:
         magic, ver, flag, quality, gop, w, h, nframes, fps100 = VHDR2.unpack(data[: VHDR2.size])
         alen = struct.unpack("<I", data[VHDR2.size : VHDR2.size + 4])[0]
+        info["quality"] = quality
+        info["gop"] = gop
+        info["width"] = w
+        info["height"] = h
+        info["frames"] = nframes
+        info["subsample_420"] = bool(flag)
+        info["version"] = ver
+        info["codec"] = "h264" if ver >= H264_VERSION else "dct"
         info["fps"] = (fps100 / 100.0) if fps100 else DEFAULT_FPS
         info["has_audio"] = alen > 0
         info["audio_bytes"] = alen
