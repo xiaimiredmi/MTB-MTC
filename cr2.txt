@@ -1,6 +1,0 @@
-pyproject ok  name=mtcodec version=1.2.1 scripts=['mtcodec']
-workflow ok  lines=55
-readme links checked=16
-source+docs=3.41 MB  binaries=0.00 MB
-
-ERRORS=0

@@ -1,3 +1,0 @@
-onefile 29.49 MB 16:52:56
-onedir 4.99 MB 16:53:19
-dll_present True
