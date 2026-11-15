@@ -34,16 +34,17 @@ MAX_SIDE = int(os.environ.get("MTCODEC_VIEWER_MAX_SIDE", "1600") or 1600)
 DEFAULT_FPS = 24.0
 CACHE_LIMIT = 24
 
-BG = "#0C0E12"
-FG = "#EFEDE8"
-DIM = "#7C8794"
-BAR_BG = "#14171C"
-CHIP_BG = "#222933"
-CHIP_HI = "#2A323D"
-TRACK = "#242B35"
-ACCENT = "#12A9B4"
-ACCENT_DIM = "#0B6E77"
-CANVAS_BG = "#07090B"
+BG = "#000000"
+FG = "#FFFFFF"
+DIM = "#9499A0"
+BAR_BG = "#000000"
+CHIP_BG = "#1B1D22"
+CHIP_HI = "#2A2D34"
+TRACK = "#2A2D34"
+ACCENT = "#FB7299"
+ACCENT_HI = "#FF8CB0"
+ACCENT_DIM = "#D15A7C"
+CANVAS_BG = "#000000"
 FONT = "Microsoft YaHei"
 MONO = "Consolas"
 
@@ -52,14 +53,16 @@ FFMPEG = shutil.which("ffmpeg") or shutil.which("ffmpeg.exe")
 
 
 def fmt_time(sec):
-    """0:07.4 这样的读数，比裸秒数好认。"""
+    """1:23 / 1:02:03 这样的读数，和网页播放器一致。"""
     try:
-        total = max(0.0, float(sec))
+        total = int(max(0.0, float(sec)))
     except Exception:
-        total = 0.0
-    minutes = int(total // 60)
-    rest = total - minutes * 60
-    return "%d:%04.1f" % (minutes, rest)
+        total = 0
+    h, rest = divmod(total, 3600)
+    m, s = divmod(rest, 60)
+    if h:
+        return "%d:%02d:%02d" % (h, m, s)
+    return "%d:%02d" % (m, s)
 
 
 def round_rect(cv, x1, y1, x2, y2, r, **kw):
@@ -441,21 +444,67 @@ class Player(object):
         self.start()
 
     # ---------- 界面 ----------
+    def _play_button(self, parent, cmd, d=36):
+        import tkinter as tk
+        c = tk.Canvas(parent, width=d, height=d, bg=BAR_BG,
+                      highlightthickness=0, cursor="hand2")
+        ring = c.create_oval(0, 0, d, d, fill=ACCENT, outline="")
+        c.bind("<Button-1>", lambda e: cmd())
+        c.bind("<Enter>", lambda e: c.itemconfigure(ring, fill=ACCENT_HI))
+        c.bind("<Leave>", lambda e: c.itemconfigure(ring, fill=ACCENT))
+        self._play_cv = c
+        self._play_d = d
+        self._play_ico = []
+        self._paint_play(True)
+        return c
+
+    def _paint_play(self, playing):
+        c = getattr(self, "_play_cv", None)
+        if c is None:
+            return
+        for it in getattr(self, "_play_ico", []):
+            try:
+                c.delete(it)
+            except Exception:
+                pass
+        d = self._play_d
+        cx = cy = d / 2.0
+        self._play_ico = []
+        if playing:
+            self._play_ico.append(
+                c.create_rectangle(cx - 7, cy - 7.5, cx - 2.4, cy + 7.5,
+                                   fill=FG, outline=""))
+            self._play_ico.append(
+                c.create_rectangle(cx + 2.4, cy - 7.5, cx + 7, cy + 7.5,
+                                   fill=FG, outline=""))
+        else:
+            self._play_ico.append(
+                c.create_polygon(cx - 4.6, cy - 7.8, cx - 4.6, cy + 7.8,
+                                 cx + 7.4, cy, fill=FG, outline=""))
+
+    def _hover_pb(self, on):
+        self._pb_hot = bool(on)
+        self._draw_progress(self._shown_time())
+
+    def _chip_hover(self, c, box, label, on):
+        if getattr(c, "_on", False):
+            return
+        c.itemconfigure(box, fill=(CHIP_HI if on else CHIP_BG))
+        c.itemconfigure(label, fill=(FG if on else DIM))
+
     def _chip(self, parent, text, cmd, w=54, h=26, primary=False):
         import tkinter as tk
-        c = tk.Canvas(parent, width=w, height=h, bg=BAR_BG,
-                      highlightthickness=0, cursor="hand2")
-        fill_on = ACCENT if primary else CHIP_BG
-        box = round_rect(c, 1, 1, w - 1, h - 1, (h - 2) / 2.0, fill=fill_on,
-                         outline=("" if primary else "#2F3945"), width=1)
+        c = tk.Canvas(parent, width=w, height=h, bg=BAR_BG, highlightthickness=0,
+                      cursor="hand2")
+        box = round_rect(c, 0, 0, w, h, h / 2.0, fill=CHIP_BG,
+                         outline=(ACCENT if primary else ""), width=1)
         label = c.create_text(w / 2.0, h / 2.0, text=text,
-                              fill=("#FFFFFF" if primary else FG),
-                              font=(FONT, 10, "bold" if primary else "normal"))
+                              fill=(ACCENT if primary else DIM),
+                              font=(FONT, 9, "bold" if primary else "normal"))
+        c._on = bool(primary)
         c.bind("<Button-1>", lambda e: cmd())
-        c.bind("<Enter>", lambda e: c.itemconfigure(box, fill=CHIP_HI)
-               if c.itemcget(box, "fill") not in (ACCENT,) else None)
-        c.bind("<Leave>", lambda e: c.itemconfigure(box, fill=fill_on)
-               if c.itemcget(box, "fill") not in (ACCENT,) else None)
+        c.bind("<Enter>", lambda e: self._chip_hover(c, box, label, True))
+        c.bind("<Leave>", lambda e: self._chip_hover(c, box, label, False))
         return c, box, label
 
     def _build_ui(self, title):
@@ -465,15 +514,16 @@ class Player(object):
             child.destroy()
         self.root.title(title)
         self.root.configure(bg=BG)
-        self.root.minsize(820, 420)
+        self.root.minsize(780, 420)
         self._chips = []
         self._togs = []
         self._cur = 0
+        self._pb_hot = False
 
         hf, wf = self._shape
         try:
-            sw = min(max(840, wf + 40), 1240)
-            sh = int(round(sw * hf / float(wf))) + 138
+            sw = min(max(880, wf + 40), 1120)
+            sh = int(round(sw * hf / float(wf))) + 150
             sw = min(sw, self.root.winfo_screenwidth() - 80)
             sh = min(sh, self.root.winfo_screenheight() - 100)
             self.root.geometry("%dx%d" % (sw, sh))
@@ -481,16 +531,20 @@ class Player(object):
             pass
 
         head = tk.Frame(self.root, bg=BG)
-        head.pack(side="top", fill="x", padx=16, pady=(10, 6))
-        tag = tk.Label(head, text="MTC", bg=ACCENT, fg="#FFFFFF",
-                       font=(FONT, 8, "bold"), padx=7, pady=1)
-        tag.pack(side="left")
+        head.pack(side="top", fill="x", padx=20, pady=(12, 2))
+
+        mark = tk.Canvas(head, width=5, height=22, bg=BG, highlightthickness=0)
+        round_rect(mark, 0, 1, 5, 21, 2.5, fill=ACCENT, outline="")
+        mark.pack(side="left")
+
         tk.Label(head, text=title, bg=BG, fg=FG, anchor="w",
-                 font=(FONT, 11, "bold")).pack(side="left", padx=(9, 0))
-        meta = "%d×%d   ·   %d 帧   ·   %s" % (
-            wf, hf, self.count, fmt_time(self.duration))
+                 font=(FONT, 12, "bold")).pack(side="left", padx=(10, 0))
+        meta = "%d×%d  ·  %d fps" % (wf, hf, int(round(self.fps)))
         tk.Label(head, text=meta, bg=BG, fg=DIM,
-                 font=(FONT, 9)).pack(side="right")
+                 font=(FONT, 9)).pack(side="right", padx=(12, 0))
+
+        bar = tk.Frame(self.root, bg=BAR_BG)
+        bar.pack(side="bottom", fill="x")
 
         self.image_label = tk.Label(self.root, bg=CANVAS_BG, bd=0,
                                     highlightthickness=0)
@@ -498,27 +552,25 @@ class Player(object):
         self.image_label.bind("<Configure>", self._on_canvas_resize)
         self.image_label.bind("<Double-Button-1>", lambda e: self.toggle())
 
-        bar = tk.Frame(self.root, bg=BAR_BG)
-        bar.pack(side="bottom", fill="x")
-
-        self.pb = tk.Canvas(bar, height=22, bg=BAR_BG, highlightthickness=0,
+        self.pb = tk.Canvas(bar, height=26, bg=BAR_BG, highlightthickness=0,
                             cursor="hand2")
-        self.pb.pack(fill="x", padx=12, pady=(8, 0))
+        self.pb.pack(fill="x", padx=20, pady=(2, 0))
         self.pb.bind("<Button-1>", self._pb_press)
         self.pb.bind("<B1-Motion>", self._pb_drag)
         self.pb.bind("<ButtonRelease-1>", self._pb_release)
         self.pb.bind("<Configure>", lambda e: self._draw_progress(self._shown_time()))
+        self.pb.bind("<Enter>", lambda e: self._hover_pb(True))
+        self.pb.bind("<Leave>", lambda e: self._hover_pb(False))
 
         row = tk.Frame(bar, bg=BAR_BG)
-        row.pack(fill="x", padx=14, pady=(10, 12))
+        row.pack(fill="x", padx=20, pady=(8, 16))
 
-        self.btn_play, self._play_box, self._play_text = self._chip(
-            row, "暂停", self.toggle, 72, 30, primary=True)
+        self.btn_play = self._play_button(row, self.toggle, 38)
         self.btn_play.pack(side="left")
 
-        self.time_label = tk.Label(row, text="0:00.0 / %s" % fmt_time(self.duration),
+        self.time_label = tk.Label(row, text="0:00 / %s" % fmt_time(self.duration),
                                    bg=BAR_BG, fg=FG, font=(MONO, 10))
-        self.time_label.pack(side="left", padx=(14, 0))
+        self.time_label.pack(side="left", padx=(12, 0))
 
         self.end_var = tk.BooleanVar(value=False)
         self.loop_var = tk.BooleanVar(value=False)
@@ -527,18 +579,18 @@ class Player(object):
         self._toggle_chip(row, "循环", self.loop_var, self._on_loop,
                           52).pack(side="right", padx=(0, 6))
 
-        self.vol = tk.Scale(row, from_=0, to=100, orient="horizontal", length=84,
+        self.vol = tk.Scale(row, from_=0, to=100, orient="horizontal", length=78,
                             showvalue=False, command=self._on_volume,
                             bg=BAR_BG, fg=FG, troughcolor=TRACK,
                             highlightthickness=0, bd=0, sliderrelief="flat",
-                            sliderlength=14, width=8, activebackground=ACCENT)
+                            sliderlength=12, width=3, activebackground=ACCENT)
         self.vol.set(100)
-        self.vol.pack(side="right", padx=(6, 8))
+        self.vol.pack(side="right", padx=(6, 12))
 
         tk.Label(row, text="音量", bg=BAR_BG, fg=DIM,
                  font=(FONT, 9)).pack(side="right")
 
-        tk.Frame(row, width=1, height=20, bg=TRACK).pack(side="right", padx=(0, 12))
+        tk.Frame(row, width=1, height=18, bg=TRACK).pack(side="right", padx=(0, 14))
 
         for sp in SPEEDS:
             self._speed_chip(row, sp).pack(side="left", padx=(3, 0))
@@ -574,9 +626,10 @@ class Player(object):
     def _paint_speeds(self):
         for speed, c, box, label in self._chips:
             on = abs(self.speed - speed) < 1e-6
-            c.itemconfigure(box, fill=(ACCENT if on else CHIP_BG),
-                            outline=(ACCENT if on else "#2F3945"))
-            c.itemconfigure(label, fill=("#FFFFFF" if on else FG))
+            c._on = on
+            c.itemconfigure(box, fill=CHIP_BG,
+                            outline=(ACCENT if on else ""), width=(1 if on else 0))
+            c.itemconfigure(label, fill=(ACCENT if on else DIM))
 
     def _toggle_chip(self, parent, text, var, cmd, w=52):
         def _hit():
@@ -590,8 +643,12 @@ class Player(object):
     def _paint_toggles(self):
         for c, box, var in self._togs:
             on = bool(var.get())
-            c.itemconfigure(box, fill=(ACCENT if on else CHIP_BG),
-                            outline=(ACCENT if on else "#2F3945"))
+            c._on = on
+            c.itemconfigure(box, fill=CHIP_BG,
+                            outline=(ACCENT if on else ""), width=(1 if on else 0))
+            for it in c.find_all():
+                if c.type(it) == "text":
+                    c.itemconfigure(it, fill=(ACCENT if on else DIM))
 
     # ---------- 帧 ----------
     def _fit_size(self):
@@ -650,16 +707,20 @@ class Player(object):
     def _draw_progress(self, t):
         c = self.pb
         W = c.winfo_width() or 600
-        H = 22
+        H = 26
         mid = H / 2.0
         c.delete("all")
-        round_rect(c, 2, mid - 3, W - 2, mid + 3, 3, fill=TRACK, outline="")
+        x0, x1 = 6, W - 6
+        if x1 <= x0:
+            return
+        round_rect(c, x0, mid - 1.5, x1, mid + 1.5, 1.5, fill=TRACK, outline="")
         frac = 0.0 if not self.duration else min(1.0, max(0.0, t / self.duration))
-        x = 2 + (W - 4) * frac
-        if frac > 0.004:
-            round_rect(c, 2, mid - 3, x, mid + 3, 3, fill=ACCENT, outline="")
-        c.create_oval(x - 6, mid - 6, x + 6, mid + 6, fill=FG, outline="")
-        c.create_oval(x - 2, mid - 2, x + 2, mid + 2, fill=ACCENT, outline="")
+        x = x0 + (x1 - x0) * frac
+        if frac > 0.002:
+            round_rect(c, x0, mid - 1.5, x, mid + 1.5, 1.5,
+                       fill=ACCENT, outline="")
+        r = 7.0 if getattr(self, "_pb_hot", False) else 5.0
+        c.create_oval(x - r, mid - r, x + r, mid + r, fill=ACCENT, outline="")
 
     def _update_bar(self, t):
         self._draw_progress(t)
@@ -732,10 +793,7 @@ class Player(object):
         return "break"
 
     def _set_play_label(self, text):
-        try:
-            self.btn_play.itemconfigure(self._play_text, text=text)
-        except Exception:
-            pass
+        self._paint_play(str(text).startswith("暂停"))
 
     def _play_audio(self, start_sec):
         if not self.track.ok() or not self.audio.available():
