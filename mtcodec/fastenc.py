@@ -64,8 +64,30 @@ def _bind(lib):
         ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p,
         ctypes.c_int, ctypes.c_int,
     ]
+    me = None
+    me_pred = None
+    try:
+        me = lib.mt_me_search
+        me_pred = lib.mt_me_predict
+    except AttributeError:
+        me = None
+    if me is not None:
+        me.restype = ctypes.c_int
+        me.argtypes = [
+            ctypes.c_void_p, ctypes.c_void_p,
+            ctypes.c_uint32, ctypes.c_uint32,
+            ctypes.c_uint32, ctypes.c_uint32, ctypes.c_uint32,
+            ctypes.c_void_p,
+        ]
+        me_pred.restype = ctypes.c_int
+        me_pred.argtypes = [
+            ctypes.c_void_p, ctypes.c_void_p,
+            ctypes.c_uint32, ctypes.c_uint32, ctypes.c_uint32,
+            ctypes.c_void_p,
+        ]
     return {"new": new, "plane": plane, "flush": flush, "free": free,
-            "quant": quant, "recon": recon, "prep": prep}
+            "quant": quant, "recon": recon, "prep": prep,
+            "me": me, "me_pred": me_pred}
 
 
 _ENC = _bind(_LIB)
@@ -77,6 +99,45 @@ def available():
 
 def prep_available():
     return _ENC is not None and _ENC.get("prep") is not None
+
+
+def me_available():
+    return _ENC is not None and _ENC.get("me") is not None
+
+
+def me_search(cur, ref, block=16, radius=16, refine=2):
+    """Per-block motion vectors, ``(nbh, nbw, 2)`` int8, entirely in Rust."""
+    if not me_available():
+        raise RuntimeError("native motion search not available")
+    cur = np.ascontiguousarray(cur, dtype=np.int32)
+    ref = np.ascontiguousarray(ref, dtype=np.int32)
+    h, w = cur.shape
+    nbh, nbw = h // block, w // block
+    mv = np.zeros((nbh, nbw, 2), np.int8)
+    rc = _ENC["me"](
+        ctypes.c_void_p(cur.ctypes.data), ctypes.c_void_p(ref.ctypes.data),
+        w, h, block, radius, refine, ctypes.c_void_p(mv.ctypes.data),
+    )
+    if rc != 0:
+        raise RuntimeError("native motion search failed")
+    return mv
+
+
+def me_predict(ref, mv, block=16):
+    """Prediction plane built from ``ref`` and the vector table, in Rust."""
+    if not me_available():
+        raise RuntimeError("native motion prediction not available")
+    ref = np.ascontiguousarray(ref, dtype=np.int32)
+    mv = np.ascontiguousarray(mv, dtype=np.int8)
+    h, w = ref.shape
+    out = np.zeros((h, w), np.int32)
+    rc = _ENC["me_pred"](
+        ctypes.c_void_p(ref.ctypes.data), ctypes.c_void_p(mv.ctypes.data),
+        w, h, block, ctypes.c_void_p(out.ctypes.data),
+    )
+    if rc != 0:
+        raise RuntimeError("native motion prediction failed")
+    return out
 
 
 def prep_frame(frame, mult, subsample):

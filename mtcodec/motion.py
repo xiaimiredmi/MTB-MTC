@@ -22,6 +22,8 @@ sides agree bit for bit.
 """
 import numpy as np
 
+from . import fastenc
+
 BLOCK = 16
 RADIUS = 16
 REFINE = 2
@@ -78,6 +80,8 @@ def search(cur, ref, block=BLOCK, radius=RADIUS, refine=REFINE):
     mv = np.zeros((nbh, nbw, 2), np.int8)
     if nbh < 1 or nbw < 1 or radius <= 0:
         return mv
+    if fastenc.me_available():
+        return fastenc.me_search(cur, ref, block, radius, refine)
 
     cs = _down4(cur)
     rs = _down4(ref)
@@ -122,6 +126,8 @@ def predict(ref, mv, block=BLOCK):
     """Rebuild a prediction plane from ``ref`` using per-block vectors."""
     h, w = ref.shape
     nbh, nbw = h // block, w // block
+    if nbh >= 1 and nbw >= 1 and fastenc.me_available():
+        return fastenc.me_predict(ref, mv, block)
     # gather gives (nbh, nbw, block, block); a plane needs the block index to
     # sit between the two row/column axes, so transpose before flattening.
     blocks = np.ascontiguousarray(gather(ref, mv, block).transpose(0, 2, 1, 3))

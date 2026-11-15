@@ -1292,3 +1292,192 @@ pub extern "C" fn mt_prep_frame(
     }
     0
 }
+
+/// Per-block motion search: quarter-res coarse pass, then a full-resolution
+/// verification of the winner, its neighbours and the zero vector.
+///
+/// `cur_p` and `ref_p` are single-channel i32 planes of `w*h`; `mv` receives
+/// `nbh*nbw` pairs of (dx, dy) as i8 in the same block order the encoder uses.
+/// Running this here instead of in numpy takes it from ~700 ms to a few tens
+/// of milliseconds per 1080p frame.
+#[no_mangle]
+pub extern "C" fn mt_me_search(
+    curp: *const i32,
+    refp: *const i32,
+    w: u32,
+    h: u32,
+    block: u32,
+    radius: u32,
+    refine: u32,
+    out_mv: *mut i8,
+) -> i32 {
+    if curp.is_null() || refp.is_null() || out_mv.is_null() {
+        return -1;
+    }
+    let w = w as usize;
+    let h = h as usize;
+    let block = block as usize;
+    let radius = radius as usize;
+    let refine = refine as i32;
+    if block == 0 || w < block || h < block {
+        return -1;
+    }
+    let nbh = h / block;
+    let nbw = w / block;
+    let cur_p = unsafe { std::slice::from_raw_parts(curp, w * h) };
+    let ref_p = unsafe { std::slice::from_raw_parts(refp, w * h) };
+    let mv = unsafe { std::slice::from_raw_parts_mut(out_mv, nbh * nbw * 2) };
+
+    let cells = nbh * nbw;
+    let mut seed = vec![0i32; cells * 2];
+    let h4 = h / 4;
+    let w4 = w / 4;
+    let b4 = (block / 4).max(1);
+    if radius >= 4 && h4 >= b4 && w4 >= b4 && h4 / b4 == nbh && w4 / b4 == nbw {
+        let r4 = (radius / 4) as i32;
+        let mut cs = vec![0i32; h4 * w4];
+        let mut rs = vec![0i32; h4 * w4];
+        for y in 0..h4 {
+            for x in 0..w4 {
+                let mut a = 0i32;
+                let mut b = 0i32;
+                for dy in 0..4usize {
+                    let row = (y * 4 + dy) * w + x * 4;
+                    for dx in 0..4usize {
+                        a += cur_p[row + dx];
+                        b += ref_p[row + dx];
+                    }
+                }
+                cs[y * w4 + x] = a >> 4;
+                rs[y * w4 + x] = b >> 4;
+            }
+        }
+        let mut best = vec![i32::MAX; cells];
+        for dy in -r4..=r4 {
+            for dx in -r4..=r4 {
+                for by in 0..nbh {
+                    for bx in 0..nbw {
+                        let mut sad = 0i32;
+                        for y in 0..b4 {
+                            let cy = by * b4 + y;
+                            let crow = cy * w4 + bx * b4;
+                            for x in 0..b4 {
+                                let cx = bx * b4 + x;
+                                let ry = (cy as i32 + dy).clamp(0, h4 as i32 - 1) as usize;
+                                let rx = (cx as i32 + dx).clamp(0, w4 as i32 - 1) as usize;
+                                sad += (cs[crow + x] - rs[ry * w4 + rx]).abs();
+                            }
+                        }
+                        let i = by * nbw + bx;
+                        if sad < best[i] {
+                            best[i] = sad;
+                            seed[i * 2] = dx * 4;
+                            seed[i * 2 + 1] = dy * 4;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    let mut best2 = vec![i32::MAX; cells];
+    for by in 0..nbh {
+        for bx in 0..nbw {
+            let mut sad = 0i32;
+            for y in 0..block {
+                let row = (by * block + y) * w + bx * block;
+                for x in 0..block {
+                    sad += (cur_p[row + x] - ref_p[row + x]).abs();
+                }
+            }
+            let i = by * nbw + bx;
+            best2[i] = sad;
+            mv[i * 2] = 0;
+            mv[i * 2 + 1] = 0;
+        }
+    }
+    for oy in [-refine, 0, refine] {
+        for ox in [-refine, 0, refine] {
+            for by in 0..nbh {
+                for bx in 0..nbw {
+                    let i = by * nbw + bx;
+                    let mxi = seed[i * 2] + ox;
+                    let myi = seed[i * 2 + 1] + oy;
+                    let mut sad = 0i32;
+                    for y in 0..block {
+                        let cy = (by * block + y) as i32 + myi;
+                        let ry = cy.clamp(0, h as i32 - 1) as usize;
+                        let crow = (by * block + y) * w + bx * block;
+                        let srow = ry * w;
+                        for x in 0..block {
+                            let cx = (bx * block + x) as i32 + mxi;
+                            let rx = cx.clamp(0, w as i32 - 1) as usize;
+                            sad += (cur_p[crow + x] - ref_p[srow + rx]).abs();
+                        }
+                    }
+                    if sad < best2[i] {
+                        best2[i] = sad;
+                        mv[i * 2] = mxi.clamp(-127, 127) as i8;
+                        mv[i * 2 + 1] = myi.clamp(-127, 127) as i8;
+                    }
+                }
+            }
+        }
+    }
+    0
+}
+
+/// Rebuild a prediction plane from `ref_p` using the per-block vectors of `mv`.
+#[no_mangle]
+pub extern "C" fn mt_me_predict(
+    refp: *const i32,
+    mv: *const i8,
+    w: u32,
+    h: u32,
+    block: u32,
+    out_pred: *mut i32,
+) -> i32 {
+    if refp.is_null() || mv.is_null() || out_pred.is_null() {
+        return -1;
+    }
+    let w = w as usize;
+    let h = h as usize;
+    let block = block as usize;
+    if block == 0 || w < block || h < block {
+        return -1;
+    }
+    let nbh = h / block;
+    let nbw = w / block;
+    let ref_p = unsafe { std::slice::from_raw_parts(refp, w * h) };
+    let mv_p = unsafe { std::slice::from_raw_parts(mv, nbh * nbw * 2) };
+    let out = unsafe { std::slice::from_raw_parts_mut(out_pred, w * h) };
+    for by in 0..nbh {
+        for bx in 0..nbw {
+            let i = by * nbw + bx;
+            let dx = mv_p[i * 2] as i32;
+            let dy = mv_p[i * 2 + 1] as i32;
+            for y in 0..block {
+                let cy = (by * block + y) as i32 + dy;
+                let ry = cy.clamp(0, h as i32 - 1) as usize;
+                let drow = (by * block + y) * w + bx * block;
+                let srow = ry * w;
+                for x in 0..block {
+                    let cx = (bx * block + x) as i32 + dx;
+                    let rx = cx.clamp(0, w as i32 - 1) as usize;
+                    out[drow + x] = ref_p[srow + rx];
+                }
+            }
+        }
+    }
+    for y in nbh * block..h {
+        for x in 0..w {
+            out[y * w + x] = out[(nbh * block - 1) * w + x];
+        }
+    }
+    for y in 0..h {
+        for x in nbw * block..w {
+            out[y * w + x] = out[y * w + nbw * block - 1];
+        }
+    }
+    0
+}
