@@ -15,6 +15,7 @@ SKIP_DIRS = {"__pycache__", "_shots", "build", "dist", "release", ".git",
              ".venv", "venv", "node_modules", "target"}
 SKIP_EXT = {".pyc", ".pyo", ".log", ".exe", ".zip"}
 SKIP_NAMES = {"Thumbs.db", "desktop.ini", ".DS_Store"}
+SKIP_REL = {"samples/q_test.mtc"}  # 本机试转的大样本，不进发布包
 KEEP_ROOT_TXT = {"打包与安装说明.txt"}
 
 
@@ -32,6 +33,8 @@ def main():
                 continue  # 根目录只保留发布说明，运行日志不进包
             p = os.path.join(dirpath, name)
             rel = os.path.relpath(p, ROOT).replace("\\", "/")
+            if rel in SKIP_REL:
+                continue
             files.append((p, TOP + "/" + rel))
     files.sort(key=lambda t: t[1])
 
