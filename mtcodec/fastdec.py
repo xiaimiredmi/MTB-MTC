@@ -17,8 +17,14 @@ import numpy as np
 OFF_COUNT = 9
 TABLE_KEYS = ("dc_cls", "dc_sign", "dc_extra", "last", "sig", "ac_cls",
               "ac_sign", "ac_extra", "skip")
-_FIRST = (0, 16, 17, 33, 97, 105, 233, 241, 369)  # per-plane offsets × planes
+# Legacy layout: 8 zig-zag bands, left-skip only.
+_FIRST = (0, 16, 17, 33, 97, 105, 233, 241, 369)
 _TOTAL_PER_PLANE = 371
+# Context layout: DC plus eight zig-zag bands, each split by whether the left
+# block was all-zero and whether the previous coefficient was nonzero; skip
+# flags also see the block above.
+_FIRST_CTX = (0, 32, 34, 66, 194, 226, 738, 770, 1282)
+_TOTAL_CTX = 1286
 _UNSET = None
 
 
@@ -70,7 +76,7 @@ def _load():
             ctypes.c_void_p, ctypes.c_void_p,
             ctypes.c_uint32, ctypes.c_uint32, ctypes.c_uint32, ctypes.c_uint32,
             ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p,
-            ctypes.c_int, ctypes.c_int,
+            ctypes.c_int, ctypes.c_int, ctypes.c_uint32,
         ]
         rgb.restype = ctypes.c_int
         rgb.argtypes = [
@@ -88,7 +94,7 @@ def _load():
                 ctypes.POINTER(ctypes.c_uint32),
                 ctypes.c_void_p, ctypes.c_size_t, ctypes.c_void_p,
                 ctypes.c_uint32, ctypes.c_uint32, ctypes.c_uint32,
-                ctypes.c_uint32, ctypes.c_void_p,
+                ctypes.c_uint32, ctypes.c_void_p, ctypes.c_uint32,
             ]
         except AttributeError:
             pass
@@ -133,11 +139,14 @@ class PlaneDecoder:
     ``attach`` copies in.
     """
 
-    def __init__(self, model, mode_model, planes=3):
-        total = _TOTAL_PER_PLANE * planes
+    def __init__(self, model, mode_model, planes=3, layout=1):
+        self.layout = 2 if layout == 2 else 1
+        first = _FIRST_CTX if self.layout == 2 else _FIRST
+        per = _TOTAL_CTX if self.layout == 2 else _TOTAL_PER_PLANE
+        total = per * planes
         self.probs = np.zeros(total, np.int16)
         self.offsets = np.array(
-            [off * planes for off in _FIRST], dtype=np.uint32)
+            [off * planes for off in first], dtype=np.uint32)
         self.planes = planes
         self._buf = None
         self.dec = None
@@ -145,13 +154,14 @@ class PlaneDecoder:
 
     def _fill(self, model, mode_model):
         planes = self.planes
+        first = _FIRST_CTX if self.layout == 2 else _FIRST
         src = [
             model.dc_cls, model.dc_sign, model.dc_extra, model.last,
             model.sig, model.ac_cls, model.ac_sign, model.ac_extra,
             mode_model.skip,
         ]
         for k, values in enumerate(src):
-            start = _FIRST[k] * planes
+            start = first[k] * planes
             stop = start + len(values)
             self.probs[start:stop] = np.asarray(values, dtype=np.int16)
 
@@ -175,7 +185,7 @@ class PlaneDecoder:
             ctypes.c_void_p(self.probs.ctypes.data), int(self.probs.size),
             ctypes.c_void_p(self.offsets.ctypes.data),
             int(pl), int(hb), int(wb), 1 if inter else 0,
-            ctypes.c_void_p(out.ctypes.data),
+            ctypes.c_void_p(out.ctypes.data), int(self.layout),
         )
         self.dec.pos = int(pos.value)
         self.dec.range = int(rng.value)
@@ -209,7 +219,7 @@ class PlaneDecoder:
             int(pl), int(hb), int(wb), 1 if inter else 0,
             ctypes.c_void_p(tab.ctypes.data), pred_ptr, aq_ptr,
             ctypes.c_void_p(out.ctypes.data),
-            int(clip[0]), int(clip[1]),
+            int(clip[0]), int(clip[1]), int(self.layout),
         )
         self.dec.pos = int(pos.value)
         self.dec.range = int(rng.value)

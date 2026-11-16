@@ -14,7 +14,7 @@ import ctypes
 
 import numpy as np
 
-from .fastdec import _FIRST, _LIB, _TOTAL_PER_PLANE
+from .fastdec import _FIRST, _FIRST_CTX, _LIB, _TOTAL_CTX, _TOTAL_PER_PLANE
 
 
 def _bind(lib):
@@ -48,6 +48,7 @@ def _bind(lib):
         ctypes.c_void_p, ctypes.c_void_p,
         ctypes.c_uint32, ctypes.c_uint32,
         ctypes.c_void_p, ctypes.c_uint32, ctypes.c_uint32, ctypes.c_uint32,
+        ctypes.c_uint32,
     ]
     flush.restype = ctypes.c_void_p
     flush.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_size_t)]
@@ -287,22 +288,25 @@ class PlaneEncoder:
     ``fastdec.PlaneDecoder`` does on the decode side.
     """
 
-    def __init__(self, model, mode_model, planes=3):
+    def __init__(self, model, mode_model, planes=3, layout=1):
         if _ENC is None:
             raise RuntimeError("native encoder not available")
         self.planes = planes
-        self.probs = np.zeros(_TOTAL_PER_PLANE * planes, np.int16)
+        self.layout = 2 if layout == 2 else 1
+        per = _TOTAL_CTX if self.layout == 2 else _TOTAL_PER_PLANE
+        self.probs = np.zeros(per * planes, np.int16)
         self._fill(model, mode_model)
 
     def _fill(self, model, mode_model):
         planes = self.planes
+        first = _FIRST_CTX if self.layout == 2 else _FIRST
         src = [
             model.dc_cls, model.dc_sign, model.dc_extra, model.last,
             model.sig, model.ac_cls, model.ac_sign, model.ac_extra,
             mode_model.skip,
         ]
         for k, values in enumerate(src):
-            start = _FIRST[k] * planes
+            start = first[k] * planes
             stop = start + len(values)
             self.probs[start:stop] = np.asarray(values, dtype=np.int16)
 
@@ -321,6 +325,7 @@ class PlaneEncoder:
                 int(arr.shape[0]), int(arr.shape[1]),
                 ctypes.c_void_p(self.probs.ctypes.data),
                 int(self.planes), int(pl), 1 if inter else 0,
+                int(self.layout),
             )
             if rc != 0:
                 raise RuntimeError("native encoder failed (rc=%d)" % rc)

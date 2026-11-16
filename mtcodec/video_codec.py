@@ -23,7 +23,9 @@ VHDR2 = struct.Struct("<4sBBBBHHII")
 # table precedes every P frame. 4: the payload is an H.264 stream (optional
 # backend, never the default). 5: motion vectors plus adaptive quantisation,
 # whose table both sides derive from the reference plane. 6: quarter-pixel
-# motion vectors (int16) plus AQ. 7: quarter-pixel vectors without AQ.
+# motion vectors (int16) plus AQ. 7: quarter-pixel vectors without AQ. 8: the
+# context-coded residual model (DC plus four AC groups, left-zero and
+# above-skip contexts) on top of 6.
 #
 # Version 3 was reused once for AQ without being bumped, so a stream written
 # with AQ off could be read back with AQ on. 5 closed that hole; each later
@@ -34,10 +36,12 @@ H264_VERSION = 4
 AQ_VERSION = 5
 SUBPEL_VERSION = 6
 SUBPEL_NO_AQ_VERSION = 7
-ME_VERSIONS = (3, 5, 6, 7)
-AQ_VERSIONS = (5, 6)
-SUBPEL_VERSIONS = (6, 7)
-VERSIONS_HEAD2 = (2, 3, 4, 5, 6, 7)
+CTX_VERSION = 8
+ME_VERSIONS = (3, 5, 6, 7, 8)
+AQ_VERSIONS = (5, 6, 8)
+SUBPEL_VERSIONS = (6, 7, 8)
+CTX_VERSIONS = (8,)
+VERSIONS_HEAD2 = (2, 3, 4, 5, 6, 7, 8)
 
 SCENE_CUT_SAD = 24.0
 DEFAULT_FPS = 24.0
@@ -134,11 +138,13 @@ def _enc_intra(enc, m, pl, plane, step):
     hb, wb = qz.shape[0], qz.shape[1]
     for r in range(hb):
         prev = 0
+        left_zero = 0
         row = qz[r]
         for c in range(wb):
             blk = row[c].tolist()
-            enc_block(enc, m, pl, blk, prev)
+            enc_block(enc, m, pl, blk, prev, left_zero)
             prev = blk[0]
+            left_zero = 1 if not any(blk) else 0
     return qz, _recon(qz, step, None, pl)
 
 
@@ -148,10 +154,12 @@ def _dec_intra(dec, m, pl, shape, step):
     qz = np.zeros((hb, wb, 64), np.int32)
     for r in range(hb):
         prev = 0
+        left_zero = 0
         for c in range(wb):
-            blk = dec_block(dec, m, pl, prev)
+            blk = dec_block(dec, m, pl, prev, left_zero)
             qz[r, c] = blk
             prev = blk[0]
+            left_zero = 1 if not any(blk) else 0
     return qz, _recon(qz, step, None, pl)
 
 
@@ -160,21 +168,28 @@ def _enc_inter(enc, mm, m, pl, plane, ref, step):
     qz = _quantize(plane, step, pred)
     hb, wb = qz.shape[0], qz.shape[1]
     flags = np.zeros((hb, wb), np.int8)
+    above = [0] * wb
     for r in range(hb):
         prev = 0
         left_skip = 0
+        left_zero = 0
         row = qz[r]
         for c in range(wb):
             blk = row[c].tolist()
             skip = not any(blk)
             if skip:
-                enc_skip(enc, mm, pl, left_skip, 1)
+                enc_skip(enc, mm, pl, left_skip, 1, above[c])
                 flags[r, c] = 1
+                left_skip = 1
+                left_zero = 1
+                above[c] = 1
             else:
-                enc_skip(enc, mm, pl, left_skip, 0)
-                enc_block(enc, m, pl, blk, prev)
+                enc_skip(enc, mm, pl, left_skip, 0, above[c])
+                enc_block(enc, m, pl, blk, prev, left_zero)
                 prev = blk[0]
-            left_skip = 1 if skip else 0
+                left_skip = 0
+                left_zero = 0
+                above[c] = 0
     qz_eff = qz * (1 - flags[:, :, None])
     return qz_eff, _recon(qz_eff, step, pred, pl)
 
@@ -184,17 +199,23 @@ def _dec_inter(dec, mm, m, pl, shape, ref, step):
     hb, wb = h // 8, w // 8
     pred = tf.blocks_of(ref.astype(np.float64))
     qz = np.zeros((hb, wb, 64), np.int32)
+    above = [0] * wb
     for r in range(hb):
         prev = 0
         left_skip = 0
+        left_zero = 0
         for c in range(wb):
-            if dec_skip(dec, mm, pl, left_skip):
+            if dec_skip(dec, mm, pl, left_skip, above[c]):
                 left_skip = 1
+                left_zero = 1
+                above[c] = 1
                 continue
-            blk = dec_block(dec, m, pl, prev)
+            blk = dec_block(dec, m, pl, prev, left_zero)
             qz[r, c] = blk
             prev = blk[0]
             left_skip = 0
+            left_zero = 0
+            above[c] = 0
     return qz, _recon(qz, step, pred, pl)
 
 
@@ -324,11 +345,12 @@ def encode_video(frames, quality=85, subsample="420", gop=12, collect=None,
     flag = 1 if subsample == "420" else 0
     mult = 16 if flag else 8
     step = tf.step_table(tf.quality_scale(quality))
-    m = Model(3)
-    mm = ModeModel(3)
-    fe = fastenc.PlaneEncoder(m, mm, 3) if fastenc.available() else None
-    fprep = fastenc.prep_available()
     subpel = _subpel_ready()
+    layout = 2 if (ME_ON and subpel and AQ_ON) else 1
+    m = Model(3, layout)
+    mm = ModeModel(3, layout)
+    fe = fastenc.PlaneEncoder(m, mm, 3, layout) if fastenc.available() else None
+    fprep = fastenc.prep_available()
     parts = []
     stats = []
     ref = None
@@ -416,7 +438,7 @@ def encode_video(frames, quality=85, subsample="420", gop=12, collect=None,
     if not ME_ON:
         version = CO_LOCATED_VERSION
     elif subpel:
-        version = SUBPEL_VERSION if AQ_ON else SUBPEL_NO_AQ_VERSION
+        version = CTX_VERSION if AQ_ON else SUBPEL_NO_AQ_VERSION
     elif AQ_ON:
         version = AQ_VERSION
     else:
@@ -451,6 +473,7 @@ def _parse_heads(data):
         info.update({
             "flag": flag, "quality": quality, "gop": gop,
             "w": w, "h": h, "nframes": nframes,
+            "version": ver,
             "audio": data[pos + 4 : pos + 4 + alen],
             "fps": (fps100 / 100.0) if fps100 else DEFAULT_FPS,
             "pos": pos + 4 + alen,
@@ -486,9 +509,10 @@ def iter_frames(data, progress=None, limit=None, stat_sink=None, head=None):
                 break
         return
     step = tf.step_table(tf.quality_scale(info["quality"]))
-    m = Model(3)
-    mm = ModeModel(3)
-    fast = fastdec.PlaneDecoder(m, mm, 3) if fastdec.available() else None
+    layout = 2 if info.get("version") in CTX_VERSIONS else 1
+    m = Model(3, layout)
+    mm = ModeModel(3, layout)
+    fast = fastdec.PlaneDecoder(m, mm, 3, layout) if fastdec.available() else None
     ref = None
     n = 0
     while pos < len(data) and n < nframes:

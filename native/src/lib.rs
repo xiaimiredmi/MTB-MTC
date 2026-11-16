@@ -105,35 +105,66 @@ impl Bases {
             skip: off[8] as usize + pl * 2,
         }
     }
+
+    fn new_ctx(off: &[u32; OFF_COUNT], pl: usize) -> Self {
+        Bases {
+            dc_cls: off[0] as usize + pl * 32,
+            dc_sign: off[1] as usize + pl * 2,
+            dc_extra: off[2] as usize + pl * 32,
+            last: off[3] as usize + pl * 128,
+            sig: off[4] as usize + pl * 32,
+            ac_cls: off[5] as usize + pl * 512,
+            ac_sign: off[6] as usize + pl * 32,
+            ac_extra: off[7] as usize + pl * 512,
+            skip: off[8] as usize + pl * 4,
+        }
+    }
 }
 
 #[inline]
-fn dec_block(d: &mut Dec, probs: &mut [i16], b: &Bases, prev_dc: i32, out: &mut [i32]) {
-    let c = dec_tree(d, probs, b.dc_cls, 4);
+fn dec_block(
+    d: &mut Dec,
+    probs: &mut [i16],
+    b: &Bases,
+    layout: u32,
+    zero_ctx: u32,
+    prev_dc: i32,
+    out: &mut [i32],
+) {
+    let z = if layout == 2 { zero_ctx as usize } else { 0 };
+    let c = dec_tree(d, probs, b.dc_cls + z * 16, 4);
     let mut dc: i32 = 0;
     if c != 0 {
-        let sign = d.decode(probs, b.dc_sign);
+        let sign = d.decode(probs, b.dc_sign + z);
         let mut mag: i32 = 1 << (c - 1);
         if c > 1 {
-            mag += dec_bits(d, probs, b.dc_extra, c - 1) as i32;
+            mag += dec_bits(d, probs, b.dc_extra + z * 16, c - 1) as i32;
         }
         dc = if sign != 0 { -mag } else { mag };
     }
     dc += prev_dc;
     out[0] = dc;
 
-    let last = dec_tree(d, probs, b.last, 6) as usize;
+    let last = dec_tree(d, probs, b.last + z * 64, 6) as usize;
     let mut i: usize = 1;
+    let mut prev_nz: usize = 0;
     while i <= last {
-        let band = i >> 3;
-        if d.decode(probs, b.sig + band) != 0 {
-            let cls = dec_tree(d, probs, b.ac_cls + band * 16, 4);
-            let sign = d.decode(probs, b.ac_sign + band);
+        let sidx = if layout == 2 {
+            z * 16 + prev_nz * 8 + (i >> 3)
+        } else {
+            i >> 3
+        };
+        if d.decode(probs, b.sig + sidx) != 0 {
+            let cls = dec_tree(d, probs, b.ac_cls + sidx * 16, 4);
+            let sign = d.decode(probs, b.ac_sign + sidx);
             let mut mag: i32 = 1 << (cls - 1);
             if cls > 1 {
-                mag += dec_bits(d, probs, b.ac_extra + band * 16, cls - 1) as i32;
+                mag += dec_bits(d, probs, b.ac_extra + sidx * 16, cls - 1) as i32;
             }
             out[i] = if sign != 0 { -mag } else { mag };
+            prev_nz = 1;
+        } else {
+            prev_nz = 0;
         }
         i += 1;
     }
@@ -159,6 +190,7 @@ pub unsafe extern "C" fn mt_dec_plane(
     wb: u32,
     inter: u32,
     out: *mut i32,
+    layout: u32,
 ) -> i32 {
     if data.is_null() || pos.is_null() || range.is_null() || code.is_null() {
         return -1;
@@ -170,9 +202,9 @@ pub unsafe extern "C" fn mt_dec_plane(
     for k in 0..OFF_COUNT {
         off_arr[k] = *offsets.add(k);
     }
-    let total = 371usize * 3;
+    let per = if layout == 2 { 1286usize } else { 371usize };
     let _ = probs_len;
-    let probs_slice = std::slice::from_raw_parts_mut(probs, total.max(1));
+    let probs_slice = std::slice::from_raw_parts_mut(probs, per * 3);
 
     let mut d = Dec {
         data,
@@ -181,16 +213,22 @@ pub unsafe extern "C" fn mt_dec_plane(
         range: *range,
         code: *code,
     };
-    let bases = Bases::new(&off_arr, pl as usize);
+    let bases = if layout == 2 {
+        Bases::new_ctx(&off_arr, pl as usize)
+    } else {
+        Bases::new(&off_arr, pl as usize)
+    };
 
     let cell = 64usize;
     let total_cells = (hb as usize) * (wb as usize);
     let out_slice = std::slice::from_raw_parts_mut(out, total_cells * cell);
 
+    let mut above_skip = vec![0u32; wb as usize];
     let mut r: usize = 0;
     while r < hb as usize {
         let mut prev: i32 = 0;
         let mut left_skip: u32 = 0;
+        let mut left_zero: u32 = 0;
         let mut c: usize = 0;
         while c < wb as usize {
             let slot = (r * (wb as usize) + c) * cell;
@@ -198,14 +236,25 @@ pub unsafe extern "C" fn mt_dec_plane(
             for v in blk.iter_mut() {
                 *v = 0;
             }
-            if inter != 0 && d.decode(probs_slice, bases.skip + left_skip as usize) != 0 {
-                left_skip = 1;
-                c += 1;
-                continue;
+            if inter != 0 {
+                let si = if layout == 2 {
+                    above_skip[c] * 2 + left_skip
+                } else {
+                    left_skip
+                };
+                if d.decode(probs_slice, bases.skip + si as usize) != 0 {
+                    left_skip = 1;
+                    left_zero = 1;
+                    above_skip[c] = 1;
+                    c += 1;
+                    continue;
+                }
             }
-            dec_block(&mut d, probs_slice, &bases, prev, blk);
+            dec_block(&mut d, probs_slice, &bases, layout, left_zero, prev, blk);
             prev = blk[0];
+            left_zero = if blk.iter().all(|v| *v == 0) { 1 } else { 0 };
             left_skip = 0;
+            above_skip[c] = 0;
             c += 1;
         }
         r += 1;
@@ -323,6 +372,7 @@ pub unsafe extern "C" fn mt_dec_recon_plane(
     out_plane: *mut i32,
     clip_lo: i32,
     clip_hi: i32,
+    layout: u32,
 ) -> i32 {
     if data.is_null() || pos.is_null() || range.is_null() || code.is_null() {
         return -1;
@@ -334,7 +384,8 @@ pub unsafe extern "C" fn mt_dec_recon_plane(
     for k in 0..OFF_COUNT {
         off_arr[k] = *offsets.add(k);
     }
-    let probs_slice = std::slice::from_raw_parts_mut(probs, 371usize * 3);
+    let per = if layout == 2 { 1286usize } else { 371usize };
+    let probs_slice = std::slice::from_raw_parts_mut(probs, per * 3);
 
     let mut d = Dec {
         data,
@@ -343,7 +394,11 @@ pub unsafe extern "C" fn mt_dec_recon_plane(
         range: *range,
         code: *code,
     };
-    let bases = Bases::new(&off_arr, pl as usize);
+    let bases = if layout == 2 {
+        Bases::new_ctx(&off_arr, pl as usize)
+    } else {
+        Bases::new(&off_arr, pl as usize)
+    };
 
     let m = dct_matrix();
     let zz = zigzag();
@@ -358,31 +413,43 @@ pub unsafe extern "C" fn mt_dec_recon_plane(
     let mut coef = [[0.0f64; 8]; 8];
     let mut recon = [[0.0f64; 8]; 8];
 
+    let mut above_skip = vec![0u32; wb as usize];
     let mut r = 0usize;
     while r < hb as usize {
         let mut prev: i32 = 0;
         let mut left_skip: u32 = 0;
+        let mut left_zero: u32 = 0;
         let mut c = 0usize;
         while c < wb as usize {
-            if inter != 0 && d.decode(probs_slice, bases.skip + left_skip as usize) != 0 {
-                left_skip = 1;
-                if use_pred {
-                    for u in 0..8usize {
-                        for v in 0..8usize {
-                            let oy = r * 8 + u;
-                            let ox = c * 8 + v;
-                            out[oy * pw + ox] = *pred.add(oy * pw + ox);
+            if inter != 0 {
+                let si = if layout == 2 {
+                    above_skip[c] * 2 + left_skip
+                } else {
+                    left_skip
+                };
+                if d.decode(probs_slice, bases.skip + si as usize) != 0 {
+                    left_skip = 1;
+                    left_zero = 1;
+                    above_skip[c] = 1;
+                    if use_pred {
+                        for u in 0..8usize {
+                            for v in 0..8usize {
+                                let oy = r * 8 + u;
+                                let ox = c * 8 + v;
+                                out[oy * pw + ox] = *pred.add(oy * pw + ox);
+                            }
                         }
                     }
+                    c += 1;
+                    continue;
                 }
-                c += 1;
-                continue;
             }
             for v in qz.iter_mut() {
                 *v = 0;
             }
-            dec_block(&mut d, probs_slice, &bases, prev, &mut qz);
+            dec_block(&mut d, probs_slice, &bases, layout, left_zero, prev, &mut qz);
             prev = qz[0];
+            left_zero = if qz.iter().all(|v| *v == 0) { 1 } else { 0 };
 
             for u in 0..8usize {
                 for v in 0..8usize {
@@ -414,6 +481,7 @@ pub unsafe extern "C" fn mt_dec_recon_plane(
                 }
             }
             left_skip = 0;
+            above_skip[c] = 0;
             c += 1;
         }
         r += 1;
@@ -617,6 +685,7 @@ pub unsafe extern "C" fn mt_dec_recon_plane_p(
     out_plane: *mut i32,
     clip_lo: i32,
     clip_hi: i32,
+    layout: u32,
 ) -> i32 {
     if data.is_null() || pos.is_null() || range.is_null() || code.is_null() {
         return -1;
@@ -634,7 +703,8 @@ pub unsafe extern "C" fn mt_dec_recon_plane_p(
     for k in 0..OFF_COUNT {
         off_arr[k] = *offsets.add(k);
     }
-    let probs_slice = std::slice::from_raw_parts_mut(probs, 371usize * 3);
+    let per = if layout == 2 { 1286usize } else { 371usize };
+    let probs_slice = std::slice::from_raw_parts_mut(probs, per * 3);
 
     let blocks = nb * nrows;
     let mut qz_all = vec![0i32; blocks * 64];
@@ -647,23 +717,40 @@ pub unsafe extern "C" fn mt_dec_recon_plane_p(
             range: *range,
             code: *code,
         };
-        let bases = Bases::new(&off_arr, pl as usize);
+        let bases = if layout == 2 {
+            Bases::new_ctx(&off_arr, pl as usize)
+        } else {
+            Bases::new(&off_arr, pl as usize)
+        };
+        let mut above_skip = vec![0u32; nb];
         let mut r = 0usize;
         while r < nrows {
             let mut prev: i32 = 0;
             let mut left_skip: u32 = 0;
+            let mut left_zero: u32 = 0;
             let mut c = 0usize;
             while c < nb {
                 let slot = (r * nb + c) * 64;
-                if inter != 0 && d.decode(probs_slice, bases.skip + left_skip as usize) != 0 {
-                    left_skip = 1;
-                    c += 1;
-                    continue;
+                if inter != 0 {
+                    let si = if layout == 2 {
+                        above_skip[c] * 2 + left_skip
+                    } else {
+                        left_skip
+                    };
+                    if d.decode(probs_slice, bases.skip + si as usize) != 0 {
+                        left_skip = 1;
+                        left_zero = 1;
+                        above_skip[c] = 1;
+                        c += 1;
+                        continue;
+                    }
                 }
                 let blk = &mut qz_all[slot..slot + 64];
-                dec_block(&mut d, probs_slice, &bases, prev, blk);
+                dec_block(&mut d, probs_slice, &bases, layout, left_zero, prev, blk);
                 prev = blk[0];
+                left_zero = if blk.iter().all(|v| *v == 0) { 1 } else { 0 };
                 left_skip = 0;
+                above_skip[c] = 0;
                 c += 1;
             }
             r += 1;
@@ -942,17 +1029,40 @@ fn enc_block(
     probs: &mut [i16],
     pl: usize,
     planes: usize,
+    layout: u32,
+    zero_ctx: u32,
     qc: &[i32],
     prev_dc: i32,
 ) {
-    let b_dc_cls = 0usize;
-    let b_dc_sign = 16 * planes;
-    let b_dc_extra = 17 * planes;
-    let b_last = 33 * planes;
-    let b_sig = 97 * planes;
-    let b_ac_cls = 105 * planes;
-    let b_ac_sign = 233 * planes;
-    let b_ac_extra = 241 * planes;
+    let ctx = layout == 2;
+    let z = if ctx { zero_ctx as usize } else { 0 };
+    let dc_stride = if ctx { 32 } else { 16 };
+    let sign_stride = if ctx { 2 } else { 1 };
+    let last_stride = if ctx { 128 } else { 64 };
+    let (b_dc_cls, b_dc_sign, b_dc_extra, b_last, b_sig, b_ac_cls, b_ac_sign, b_ac_extra) =
+        if ctx {
+            (
+                0usize,
+                32 * planes,
+                34 * planes,
+                66 * planes,
+                194 * planes,
+                226 * planes,
+                738 * planes,
+                770 * planes,
+            )
+        } else {
+            (
+                0usize,
+                16 * planes,
+                17 * planes,
+                33 * planes,
+                97 * planes,
+                105 * planes,
+                233 * planes,
+                241 * planes,
+            )
+        };
 
     let mut d = qc[0] - prev_dc;
     let mut sign = 0u32;
@@ -961,11 +1071,12 @@ fn enc_block(
         sign = 1;
     }
     let c = bit_len(d);
-    enc_tree(e, probs, b_dc_cls + pl * 16, 4, c as i32);
+    enc_tree(e, probs, b_dc_cls + pl * dc_stride + z * 16, 4, c as i32);
     if c > 0 {
-        e.encode(probs, b_dc_sign + pl, sign);
+        e.encode(probs, b_dc_sign + pl * sign_stride + z, sign);
         if c > 1 {
-            enc_bits(e, probs, b_dc_extra + pl * 16, c - 1, d - (1 << (c - 1)));
+            enc_bits(e, probs, b_dc_extra + pl * dc_stride + z * 16,
+                     c - 1, d - (1 << (c - 1)));
         }
     }
 
@@ -978,12 +1089,17 @@ fn enc_block(
         }
         i -= 1;
     }
-    enc_tree(e, probs, b_last + pl * 64, 6, last as i32);
+    enc_tree(e, probs, b_last + pl * last_stride + z * 64, 6, last as i32);
 
     let mut k = 1usize;
+    let mut prev_nz = 0usize;
     while k <= last {
         let mut v = qc[k];
-        let sidx = pl * 8 + (k >> 3);
+        let sidx = if ctx {
+            pl * 32 + z * 16 + prev_nz * 8 + (k >> 3)
+        } else {
+            pl * 8 + (k >> 3)
+        };
         if v != 0 {
             e.encode(probs, b_sig + sidx, 1);
             let mut sg = 0u32;
@@ -997,8 +1113,10 @@ fn enc_block(
             if c2 > 1 {
                 enc_bits(e, probs, b_ac_extra + sidx * 16, c2 - 1, v - (1 << (c2 - 1)));
             }
+            prev_nz = 1;
         } else {
             e.encode(probs, b_sig + sidx, 0);
+            prev_nz = 0;
         }
         k += 1;
     }
@@ -1019,46 +1137,64 @@ pub extern "C" fn mt_enc_plane(
     planes: u32,
     pl: u32,
     inter: u32,
+    layout: u32,
 ) -> i32 {
     if e_ptr.is_null() || qc_ptr.is_null() || probs_ptr.is_null() {
         return -1;
     }
     let nb = hb as usize * wb as usize;
     let pls = planes as usize;
+    let per = if layout == 2 {
+        1286usize
+    } else {
+        PROBS_PER_PLANE
+    };
     let e = unsafe { &mut *e_ptr };
     let qc = unsafe { std::slice::from_raw_parts(qc_ptr, nb * 64) };
-    let probs = unsafe { std::slice::from_raw_parts_mut(probs_ptr, PROBS_PER_PLANE * pls) };
+    let probs = unsafe { std::slice::from_raw_parts_mut(probs_ptr, per * pls) };
     let hb = hb as usize;
     let wb = wb as usize;
     let pl = pl as usize;
-    let b_skip = 369 * pls;
+    let b_skip = if layout == 2 { 1282 * pls } else { 369 * pls };
+    let skip_stride = if layout == 2 { 4 } else { 2 };
+    let mut above_skip = vec![0usize; wb];
 
     for r in 0..hb {
         let mut prev = 0i32;
         let mut left_skip = 0usize;
+        let mut left_zero = 0u32;
         for c in 0..wb {
             let off = (r * wb + c) * 64;
             let blk = &qc[off..off + 64];
-            if inter != 0 {
-                let mut skip = true;
-                for v in blk.iter() {
-                    if *v != 0 {
-                        skip = false;
-                        break;
-                    }
+            let mut zero = true;
+            for v in blk.iter() {
+                if *v != 0 {
+                    zero = false;
+                    break;
                 }
-                e.encode(probs, b_skip + pl * 2 + left_skip, if skip { 1 } else { 0 });
-                if skip {
+            }
+            if inter != 0 {
+                let si = if layout == 2 {
+                    above_skip[c] * 2 + left_skip
+                } else {
+                    left_skip
+                };
+                e.encode(probs, b_skip + pl * skip_stride + si, if zero { 1 } else { 0 });
+                if zero {
                     left_skip = 1;
+                    left_zero = 1;
+                    above_skip[c] = 1;
                     continue;
                 }
-                enc_block(e, probs, pl, pls, blk, prev);
+                enc_block(e, probs, pl, pls, layout, left_zero, blk, prev);
                 prev = blk[0];
                 left_skip = 0;
+                above_skip[c] = 0;
             } else {
-                enc_block(e, probs, pl, pls, blk, prev);
+                enc_block(e, probs, pl, pls, layout, left_zero, blk, prev);
                 prev = blk[0];
             }
+            left_zero = if zero { 1 } else { 0 };
         }
     }
     0
