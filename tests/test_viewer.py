@@ -1,19 +1,13 @@
-import os
+﻿import os
 import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
-os.environ["MTCODEC_VIEWER_AUTOCLOSE_MS"] = "1500"
+os.environ["MTCODEC_VIEWER_AUTOCLOSE_MS"] = "900"
 
 from mtcodec.viewer import open_path
 
-TARGETS = [
-    "samples/photo_c.mtb",
-    "samples/demo.mtc",
-    "samples/converted/wall_2048.mtb",
-    "samples/converted/alpha_demo.mtb",
-    "samples/converted/mtc_audio.mtc",
-]
+TARGETS = ["samples/photo_c.mtc", "samples/alpha_demo.mtc", "samples/wall_2048.mtc"]
 
 for name in TARGETS:
     path = os.path.join(ROOT, name)

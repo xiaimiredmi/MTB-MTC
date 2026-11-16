@@ -1,99 +1,78 @@
-import os
+﻿import os
 import sys
+import tempfile
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, ROOT)
 
 import numpy as np
 from PIL import Image
 
-from mtcodec import decode_image, decode_video, encode_image, encode_video, probe, probe_video
+from mtcodec import decode_image, encode_image, probe
 from mtcodec import io_bridge
 
 
-def _photo(h, w, channels=3):
-    y = np.linspace(0, 1, h)[:, None]
-    x = np.linspace(0, 1, w)[None, :]
-    r = 128 + 80 * np.sin(6.2 * x + 1.1) * np.cos(3.4 * y)
-    g = 128 + 70 * np.sin(4.4 * y + 2.0) + 40 * x
-    b = 128 + 60 * np.cos(5.5 * (x + y))
-    img = np.stack([r, g, b], axis=2)
-    if channels == 4:
-        a = np.zeros((h, w))
-        a[:, : w // 2] = 255
-        a[:, w // 2 :] = np.linspace(0, 255, w - w // 2)[None, :]
-        img = np.dstack([img, a])
-    return np.clip(img, 0, 255).astype(np.uint8)
+def _photo(w=240, h=180, alpha=False):
+    y, x = np.mgrid[0:h, 0:w]
+    r = (x * 255 // max(1, w - 1)).astype(np.uint8)
+    g = (y * 255 // max(1, h - 1)).astype(np.uint8)
+    b = ((x + y) * 255 // max(1, w + h - 2)).astype(np.uint8)
+    arr = np.stack([r, g, b], axis=2)
+    if alpha:
+        a = (x * 255 // max(1, w - 1)).astype(np.uint8)
+        arr = np.dstack([arr, a])
+    return arr
 
 
-def test_alpha_lossless():
-    img = _photo(120, 140, 4)
-    blob = encode_image(img, lossless=True)
-    info = probe(blob)
-    assert info["has_alpha"], "alpha flag missing"
-    back = decode_image(blob)
-    assert back.shape == img.shape, back.shape
-    assert np.array_equal(back[:, :, 3], img[:, :, 3]), "alpha not exact"
-    mask = img[:, :, 3] >= 8
-    assert np.array_equal(back[:, :, :3][mask], img[:, :, :3][mask]), "visible rgb not exact"
-    print("alpha lossless ok  %d bytes  alpha exact, rgb exact where alpha>=8" % len(blob))
+def test_formats():
+    tmp = tempfile.mkdtemp(prefix="mtc_fmt_")
+    arr = _photo()
+    try:
+        for ext, kw in ((".png", {}), (".jpg", {"quality": 95}),
+                        (".bmp", {}), (".webp", {"quality": 95})):
+            p = os.path.join(tmp, "in" + ext)
+            Image.fromarray(arr).save(p, **kw)
+            frames, has_alpha, src = io_bridge.load_image_frames(p)
+            assert frames[0].shape[:2] == arr.shape[:2]
+            blob = encode_image(frames[0], quality=80, subsample="420")
+            back = decode_image(blob)
+            assert back.shape[:2] == arr.shape[:2]
+            print("%-5s -> mtc  %d bytes  %dx%d" % (ext, len(blob), src[0], src[1]))
 
-
-def test_alpha_lossy():
-    img = _photo(120, 140, 4)
-    for q in (50, 85):
-        blob = encode_image(img, quality=q)
+        rgba = _photo(alpha=True)
+        p = os.path.join(tmp, "a.png")
+        Image.fromarray(rgba).save(p)
+        frames, has_alpha, _ = io_bridge.load_image_frames(p)
+        assert has_alpha
+        blob = encode_image(frames[0], quality=85, subsample="420")
         back = decode_image(blob)
-        assert np.array_equal(back[:, :, 3], img[:, :, 3]), "alpha not exact q=%d" % q
-        print("alpha lossy q=%d %d bytes alpha exact" % (q, len(blob)))
+        assert np.array_equal(back[:, :, 3], rgba[:, :, 3])
+        print("rgba -> mtc  %d bytes  alpha exact" % len(blob))
+
+        imgs = [Image.fromarray(_photo()).rotate(90 * i) for i in range(2)]
+        p = os.path.join(tmp, "anim.png")
+        imgs[0].save(p, save_all=True, append_images=imgs[1:], duration=80, loop=0)
+        frames, _, _ = io_bridge.load_image_frames(p)
+        assert len(frames) == 2
+        print("apng frames", len(frames))
+    finally:
+        for name in os.listdir(tmp):
+            os.remove(os.path.join(tmp, name))
+        os.rmdir(tmp)
 
 
-def test_apng_roundtrip():
-    frames = [_photo(64, 64, 4) for _ in range(6)]
-    for i, f in enumerate(frames):
-        f[:, :, 3] = 255 if i % 2 == 0 else 128
-    tmp = os.path.join(os.environ.get("TEMP", "."), "mtcodec_test.apng")
-    imgs = [Image.fromarray(f, mode="RGBA") for f in frames]
-    imgs[0].save(tmp, save_all=True, append_images=imgs[1:], duration=80, loop=0, format="PNG")
-    loaded, has_alpha, src = io_bridge.load_image_frames(tmp)
-    assert len(loaded) == len(frames), "apng frame count %d" % len(loaded)
-    assert has_alpha
-    blob = encode_video([f[:, :, :3] for f in loaded], quality=80, fps=12, gop=12)
-    out, stats = decode_video(blob)
-    assert len(out) == len(loaded)
-    print("apng -> mtc ok  %d frames  %d bytes" % (len(out), len(blob)))
-    os.remove(tmp)
-
-
-def test_video_audio():
-    base = _photo(96, 128)
-    frames = [np.roll(base, i * 2, axis=1) for i in range(5)]
-    fake_wav = b"RIFF" + b"\x24\x00\x00\x00WAVEfmt " + b"\x00" * 100
-    blob = encode_video(frames, quality=80, fps=12.5, audio=fake_wav)
-    info = probe_video(blob)
-    assert info["has_audio"] and info["audio_bytes"] == len(fake_wav), info
-    assert abs(info["fps"] - 12.5) < 1e-6, info["fps"]
-    got = {}
-    out, stats = decode_video(blob, collect=got)
-    assert got["audio"] == fake_wav, "audio not preserved"
-    assert abs(got["fps"] - 12.5) < 1e-6
-    print("video v2 ok  fps=%.2f audio=%d bytes frames=%d" % (
-        got["fps"], len(got["audio"]), len(out)))
-
-
-def test_v1_compat():
-    path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                        "samples", "demo.mtc")
-    with open(path, "rb") as f:
-        blob = f.read()
-    info = probe_video(blob)
-    frames, stats = decode_video(blob)
-    print("v1 sample ok  version=%d frames=%d" % (info["version"], len(frames)))
+def test_probe():
+    arr = _photo()
+    blob = encode_image(arr, quality=70, subsample="420")
+    info = probe(blob)
+    assert info["magic"] == "MTB1"
+    assert info["width"] == arr.shape[1]
+    assert info["height"] == arr.shape[0]
+    assert info["quality"] == 70
+    print("probe ok", info["width"], "x", info["height"])
 
 
 if __name__ == "__main__":
-    test_alpha_lossless()
-    test_alpha_lossy()
-    test_apng_roundtrip()
-    test_video_audio()
-    test_v1_compat()
+    test_formats()
+    test_probe()
     print("format tests passed")

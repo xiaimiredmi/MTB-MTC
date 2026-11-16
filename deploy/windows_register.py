@@ -8,19 +8,11 @@ ICON_DIR = os.path.join(ROOT, "deploy", "icons")
 
 TYPES = [
     {
-        "ext": ".mtb",
-        "progid": "MTB.Image",
-        "label": "MTB 图像",
-        "mime": "image/x-mtb",
-        "perceived": "image",
-        "icon": os.path.join(ICON_DIR, "mtb.ico"),
-    },
-    {
         "ext": ".mtc",
-        "progid": "MTB.Video",
-        "label": "MTB 视频",
-        "mime": "video/x-mtc",
-        "perceived": "video",
+        "progid": "MTC.Image",
+        "label": "MTC 图片",
+        "mime": "image/x-mtc",
+        "perceived": "image",
         "icon": os.path.join(ICON_DIR, "mtc.ico"),
     },
 ]
