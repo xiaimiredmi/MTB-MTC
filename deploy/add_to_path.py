@@ -5,8 +5,11 @@ file associations. Both registrations are idempotent and act on the *User*
 environment only, so no elevation is needed.
 
     python deploy/add_to_path.py
+    python deploy/add_to_path.py --exe D:\\MTB-MTC\\dist\\MTBViewer.exe
     python deploy/add_to_path.py --unregister
 
+Without ``--exe`` the shim runs the source launcher, so edits are live
+immediately; pass ``--exe`` after packaging to point it at the frozen build.
 The PATH value lives under ``HKCU\\Environment``; it is written with the same
 type it already had and a ``WM_SETTINGCHANGE`` broadcast asks Explorer to pick
 it up without a reboot.
@@ -103,19 +106,34 @@ def _show(path):
         print("  %s" % entry)
 
 
-def _write_shim(exe):
+def _pythonw():
+    exe = sys.executable
+    if exe.lower().endswith("python.exe"):
+        cand = exe[:-10] + "pythonw.exe"
+        if os.path.exists(cand):
+            return cand
+    return exe
+
+
+def _write_shim(exe=None):
     os.makedirs(SHIM_DIR, exist_ok=True)
     shim = os.path.join(SHIM_DIR, SHIM_NAME)
-    content = '@echo off\r\n"{0}" %*\r\n'.format(exe)
+    if exe:
+        content = '@echo off\r\n"{0}" %*\r\n'.format(exe)
+    else:
+        launcher = os.path.join(ROOT, "deploy", "mtb_launcher.py")
+        content = '@echo off\r\n"{0}" "{1}" %*\r\n'.format(_pythonw(), launcher)
     with open(shim, "w", encoding="ascii", newline="") as f:
         f.write(content)
     return shim
 
 
 def register():
-    exe = os.path.abspath(_arg("--exe", os.path.join(ROOT, "dist", "MTBViewer.exe")))
-    if not os.path.exists(exe):
-        raise SystemExit("missing packaged viewer: %s" % exe)
+    exe = _arg("--exe")
+    if exe:
+        exe = os.path.abspath(exe)
+        if not os.path.exists(exe):
+            raise SystemExit("missing packaged viewer: %s" % exe)
     shim = _write_shim(exe)
     path, kind = _read_path()
     for stale in STALE_ENTRIES:
