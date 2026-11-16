@@ -8,6 +8,7 @@ use std::fs;
 use std::process::ExitCode;
 
 mod arith;
+mod entropy;
 mod transform;
 
 const MAGIC: &[u8; 4] = b"MTB1";
