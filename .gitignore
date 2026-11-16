@@ -43,3 +43,4 @@ desktop.ini
 .env
 *.key
 *.pem
+rust/target/
