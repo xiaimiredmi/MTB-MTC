@@ -71,11 +71,12 @@ fn cmd_info(path: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn read_pgm(path: &str) -> Result<(usize, usize, Vec<u8>), String> {
+fn read_ppm(path: &str) -> Result<(usize, usize, usize, Vec<u8>), String> {
     let data = fs::read(path).map_err(|e| format!("{}: {}", path, e))?;
-    if data.len() < 2 || &data[0..2] != b"P5" {
-        return Err("only binary PGM (P5) input is supported for now".into());
+    if data.len() < 2 || &data[0..2] != b"P5" && &data[0..2] != b"P6" {
+        return Err("only binary PGM/PPM (P5/P6) input is supported for now".into());
     }
+    let ch = if &data[0..2] == b"P6" { 3 } else { 1 };
     let mut i = 2usize;
     let mut nums = Vec::new();
     while nums.len() < 3 {
@@ -93,25 +94,27 @@ fn read_pgm(path: &str) -> Result<(usize, usize, Vec<u8>), String> {
             i += 1;
         }
         if start == i {
-            return Err("bad PGM header".into());
+            return Err("bad PNM header".into());
         }
         nums.push(
             std::str::from_utf8(&data[start..i])
                 .unwrap()
                 .parse::<usize>()
-                .map_err(|_| "bad PGM header".to_string())?,
+                .map_err(|_| "bad PNM header".to_string())?,
         );
     }
-    i += 1; // single whitespace byte after maxval
+    i += 1;
     let (w, h) = (nums[0], nums[1]);
-    if data.len() < i + w * h {
-        return Err("truncated PGM body".into());
+    let need = w * h * ch;
+    if data.len() < i + need {
+        return Err("truncated PNM body".into());
     }
-    Ok((w, h, data[i..i + w * h].to_vec()))
+    Ok((w, h, ch, data[i..i + need].to_vec()))
 }
 
-fn write_pgm(path: &str, w: usize, h: usize, px: &[u8]) -> Result<(), String> {
-    let mut out = format!("P5\n{} {}\n255\n", w, h).into_bytes();
+fn write_ppm(path: &str, w: usize, h: usize, ch: usize, px: &[u8]) -> Result<(), String> {
+    let magic = if ch == 3 { "P6" } else { "P5" };
+    let mut out = format!("{}\n{} {}\n255\n", magic, w, h).into_bytes();
     out.extend_from_slice(px);
     fs::write(path, out).map_err(|e| format!("{}: {}", path, e))
 }
@@ -141,8 +144,12 @@ fn cmd_encode(args: &[String]) -> Result<(), String> {
             return Err(format!("unknown argument: {}", args[i]));
         }
     }
-    let (w, h, px) = read_pgm(input)?;
-    let blob = codec::encode_gray(w, h, &px, q);
+    let (w, h, ch, px) = read_ppm(input)?;
+    let blob = if ch == 1 {
+        codec::encode_gray(w, h, &px, q)
+    } else {
+        codec::encode_rgb444(w, h, &px, q)
+    };
     fs::write(output, &blob).map_err(|e| format!("{}: {}", output, e))?;
     println!("encoded {}x{} -> {} ({} bytes)", w, h, output, blob.len());
     Ok(())
@@ -154,9 +161,22 @@ fn cmd_decode(args: &[String]) -> Result<(), String> {
     }
     let (input, output) = (&args[2], &args[3]);
     let data = fs::read(input).map_err(|e| format!("{}: {}", input, e))?;
-    let img = codec::decode_gray(&data)?;
-    write_pgm(output, img.width, img.height, &img.pixels)?;
-    println!("decoded {}x{} -> {}", img.width, img.height, output);
+    if data.len() < 12 || &data[0..4] != b"MTB1" {
+        return Err("not an MTC image".into());
+    }
+    match data[5] {
+        0 => {
+            let img = codec::decode_gray(&data)?;
+            write_ppm(output, img.width, img.height, 1, &img.pixels)?;
+            println!("decoded {}x{} -> {}", img.width, img.height, output);
+        }
+        1 => {
+            let img = codec::decode_rgb444(&data)?;
+            write_ppm(output, img.width, img.height, 3, &img.pixels)?;
+            println!("decoded {}x{} -> {}", img.width, img.height, output);
+        }
+        mode => return Err(format!("mode {} is not implemented in Rust yet", mode)),
+    }
     Ok(())
 }
 
