@@ -128,6 +128,19 @@ def _write_shim(exe=None):
     return shim
 
 
+def _write_extra_shims():
+    cli = '@echo off\r\n"{0}" -m mtcodec %*\r\n'.format(sys.executable)
+    viewer = '@echo off\r\n"{0}" "{1}" %*\r\n'.format(
+        _pythonw(), os.path.join(ROOT, "deploy", "mtb_launcher.py"))
+    paths = []
+    for name, body in (("mtcodec.cmd", cli), ("MTCViewer.cmd", viewer)):
+        path = os.path.join(SHIM_DIR, name)
+        with open(path, "w", encoding="ascii", newline="") as f:
+            f.write(body)
+        paths.append(path)
+    return paths
+
+
 def register():
     exe = _arg("--exe")
     if exe:
@@ -135,6 +148,7 @@ def register():
         if not os.path.exists(exe):
             raise SystemExit("missing packaged viewer: %s" % exe)
     shim = _write_shim(exe)
+    extra = _write_extra_shims()
     path, kind = _read_path()
     for stale in STALE_ENTRIES:
         path, removed = _remove(path, stale)
@@ -144,6 +158,8 @@ def register():
     path, added_shim = _add(path, SHIM_DIR)
     _write_path(path, kind)
     print("shim:  %s" % shim)
+    for p in extra:
+        print("shim:  %s" % p)
     print("cargo: %s" % ("added" if added_cargo else "already on PATH"))
     print("viewer: %s" % ("added" if added_shim else "already on PATH"))
     _show(path)
