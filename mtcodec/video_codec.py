@@ -16,15 +16,23 @@ from .entropy import Model, ModeModel, dec_block, dec_skip, enc_block, enc_skip
 from .image_codec import _plane_step, _pad
 
 VID_MAGIC = b"MTC1"
-VID_VERSION = 4
 VHDR = struct.Struct("<4sBBBBHHI")
 VHDR2 = struct.Struct("<4sBBBBHHII")
 
-# version 2: co-located prediction only. version 3: adds a per-frame motion
-# vector table. version 4: the video payload is an H.264 stream.
+# Version history. 2: co-located prediction only. 3: a per-frame motion vector
+# table precedes every P frame. 4: the payload is an H.264 stream (optional
+# backend, never the default). 5: motion vectors plus adaptive quantisation,
+# whose table both sides derive from the reference plane.
+#
+# Version 3 was reused once for AQ without being bumped, so a stream written
+# with AQ off could be read back with AQ on. 5 closes that hole: AQ is on
+# exactly when the version is 5, and nothing else claims it.
+CO_LOCATED_VERSION = 2
 ME_VERSION = 3
 H264_VERSION = 4
-VERSIONS_HEAD2 = (2, 3, 4)
+AQ_VERSION = 5
+ME_VERSIONS = (ME_VERSION, AQ_VERSION)
+VERSIONS_HEAD2 = (2, 3, 4, 5)
 
 SCENE_CUT_SAD = 24.0
 DEFAULT_FPS = 24.0
@@ -349,9 +357,15 @@ def encode_video(frames, quality=85, subsample="420", gop=12, collect=None,
                       "bytes": len(payload) + 5})
         pending = None
 
+    if not ME_ON:
+        version = CO_LOCATED_VERSION
+    elif AQ_ON:
+        version = AQ_VERSION
+    else:
+        version = ME_VERSION
     audio = audio or b""
     fps100 = int(round(float(fps) * 100)) if fps else 0
-    head = VHDR2.pack(VID_MAGIC, VID_VERSION, flag, int(quality), int(gop), w, h,
+    head = VHDR2.pack(VID_MAGIC, version, flag, int(quality), int(gop), w, h,
                       count, fps100)
     head += struct.pack("<I", len(audio)) + audio
     if collect is not None:
@@ -370,7 +384,7 @@ def _parse_heads(data):
         "flag": flag, "quality": quality, "gop": gop,
         "w": w, "h": h, "nframes": nframes,
         "audio": b"", "fps": DEFAULT_FPS, "pos": VHDR.size,
-        "me": False, "codec": "dct",
+        "me": False, "aq": False, "codec": "dct",
     }
     if ver in VERSIONS_HEAD2:
         magic, ver, flag, quality, gop, w, h, nframes, fps100 = VHDR2.unpack(data[: VHDR2.size])
@@ -382,8 +396,9 @@ def _parse_heads(data):
             "audio": data[pos + 4 : pos + 4 + alen],
             "fps": (fps100 / 100.0) if fps100 else DEFAULT_FPS,
             "pos": pos + 4 + alen,
-            "me": ver == ME_VERSION,
-            "codec": "h264" if ver >= H264_VERSION else "dct",
+            "me": ver in ME_VERSIONS,
+            "aq": ver >= AQ_VERSION,
+            "codec": "h264" if ver == H264_VERSION else "dct",
         })
     elif ver != 1:
         raise ValueError("unsupported version")
@@ -449,7 +464,7 @@ def iter_frames(data, progress=None, limit=None, stat_sink=None, head=None):
         aqs = None
         if not intra and mvs is not None and ref is not None:
             preds_i = _predict_from(ref, mvs)
-            if AQ_ON:
+            if info.get("aq"):
                 aqs = [_aq_table(ref[i]) for i in range(3)]
         if fast is not None:
             fast.attach(dec)
@@ -500,6 +515,7 @@ def decode_video(data, collect=None, progress=None, limit=None, on_frame=None):
         else:
             frames.append(rgb)
     if collect is not None:
+        collect["frames"] = frames
         collect["stats"] = stats
         collect["audio"] = head.get("audio", b"")
         collect["fps"] = head.get("fps") or DEFAULT_FPS
@@ -528,7 +544,9 @@ def probe_video(data):
         info["frames"] = nframes
         info["subsample_420"] = bool(flag)
         info["version"] = ver
-        info["codec"] = "h264" if ver >= H264_VERSION else "dct"
+        info["me"] = ver in ME_VERSIONS
+        info["aq"] = ver >= AQ_VERSION
+        info["codec"] = "h264" if ver == H264_VERSION else "dct"
         info["fps"] = (fps100 / 100.0) if fps100 else DEFAULT_FPS
         info["has_audio"] = alen > 0
         info["audio_bytes"] = alen
