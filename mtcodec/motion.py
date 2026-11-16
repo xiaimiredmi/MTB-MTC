@@ -146,10 +146,39 @@ def scale(mv, div):
     return np.clip(np.rint(out), -127, 127).astype(np.int8)
 
 
-def pack(mv):
-    return np.ascontiguousarray(mv, dtype=np.int8).tobytes()
+def hp_available():
+    return fastenc.hp_available()
 
 
-def unpack(blob, nbh, nbw):
-    arr = np.frombuffer(blob, dtype=np.int8, count=nbh * nbw * 2)
+def hp_plane(ref):
+    """Half-pel grid of a reference plane, built once per frame and plane."""
+    return fastenc.hp_interp(ref)
+
+
+def search_subpel(cur, ref, hp, block=BLOCK, radius=RADIUS, refine=REFINE):
+    """Quarter-pel vectors from the integer seed plus a half/quarter ring."""
+    return fastenc.me_search_hp(cur, ref, hp, block, radius, refine)
+
+
+def predict_subpel(hp, mv, block=BLOCK):
+    return fastenc.me_predict_hp(hp, mv, block)
+
+
+def scale_sub(mv, div=2):
+    """Scale quarter-pel vectors, rounding halves away from zero."""
+    v = np.ascontiguousarray(mv, dtype=np.int32)
+    if div in (1, None):
+        return np.clip(v, -32768, 32767).astype(np.int16)
+    out = np.where(v >= 0, (v + 1) >> 1, -(((-v) + 1) >> 1))
+    return np.clip(out, -32768, 32767).astype(np.int16)
+
+
+def pack(mv, subpel=False):
+    dt = np.int16 if subpel else np.int8
+    return np.ascontiguousarray(mv, dtype=dt).tobytes()
+
+
+def unpack(blob, nbh, nbw, subpel=False):
+    dt = np.int16 if subpel else np.int8
+    arr = np.frombuffer(blob, dtype=dt, count=nbh * nbw * 2)
     return arr.reshape(nbh, nbw, 2).copy()

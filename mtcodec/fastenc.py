@@ -85,9 +85,44 @@ def _bind(lib):
             ctypes.c_uint32, ctypes.c_uint32, ctypes.c_uint32,
             ctypes.c_void_p,
         ]
+    hp = None
+    search_hp = None
+    predict_hp = None
+    aq = None
+    try:
+        hp = lib.mt_hp_interp
+        search_hp = lib.mt_me_search_hp
+        predict_hp = lib.mt_me_predict_hp
+        aq = lib.mt_aq_table
+    except AttributeError:
+        hp = None
+    if hp is not None:
+        hp.restype = ctypes.c_int
+        hp.argtypes = [ctypes.c_void_p, ctypes.c_uint32, ctypes.c_uint32,
+                       ctypes.c_void_p]
+        search_hp.restype = ctypes.c_int
+        search_hp.argtypes = [
+            ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p,
+            ctypes.c_uint32, ctypes.c_uint32, ctypes.c_uint32,
+            ctypes.c_uint32, ctypes.c_uint32, ctypes.c_void_p,
+        ]
+        predict_hp.restype = ctypes.c_int
+        predict_hp.argtypes = [
+            ctypes.c_void_p, ctypes.c_void_p,
+            ctypes.c_uint32, ctypes.c_uint32, ctypes.c_uint32,
+            ctypes.c_void_p,
+        ]
+        aq.restype = ctypes.c_int
+        aq.argtypes = [
+            ctypes.c_void_p, ctypes.c_uint32, ctypes.c_uint32, ctypes.c_uint32,
+            ctypes.c_double, ctypes.c_double, ctypes.c_double,
+            ctypes.c_void_p,
+        ]
     return {"new": new, "plane": plane, "flush": flush, "free": free,
             "quant": quant, "recon": recon, "prep": prep,
-            "me": me, "me_pred": me_pred}
+            "me": me, "me_pred": me_pred,
+            "hp": hp, "search_hp": search_hp, "predict_hp": predict_hp,
+            "aq": aq}
 
 
 _ENC = _bind(_LIB)
@@ -103,6 +138,32 @@ def prep_available():
 
 def me_available():
     return _ENC is not None and _ENC.get("me") is not None
+
+
+def hp_available():
+    return _ENC is not None and _ENC.get("hp") is not None
+
+
+def aq_available():
+    return _ENC is not None and _ENC.get("aq") is not None
+
+
+def aq_table(ref, block=8, strength=0.35, lo=0.70, hi=1.40):
+    """Per-block AQ multipliers, ``(nbh, nbw)`` float32, computed in Rust."""
+    if not aq_available():
+        raise RuntimeError("native AQ table not available")
+    ref = np.ascontiguousarray(ref, dtype=np.int32)
+    h, w = ref.shape
+    nbh, nbw = h // block, w // block
+    out = np.zeros((nbh, nbw), np.float32)
+    rc = _ENC["aq"](
+        ctypes.c_void_p(ref.ctypes.data), w, h, block,
+        ctypes.c_double(strength), ctypes.c_double(lo), ctypes.c_double(hi),
+        ctypes.c_void_p(out.ctypes.data),
+    )
+    if rc != 0:
+        raise RuntimeError("native AQ table failed")
+    return out
 
 
 def me_search(cur, ref, block=16, radius=16, refine=2):
@@ -137,6 +198,59 @@ def me_predict(ref, mv, block=16):
     )
     if rc != 0:
         raise RuntimeError("native motion prediction failed")
+    return out
+
+
+def hp_interp(ref):
+    """Half-pel grid of ``ref``: ``(2h, 2w)`` int32, built once per plane."""
+    if not hp_available():
+        raise RuntimeError("native half-pel interpolation not available")
+    ref = np.ascontiguousarray(ref, dtype=np.int32)
+    h, w = ref.shape
+    out = np.zeros((2 * h, 2 * w), np.int32)
+    rc = _ENC["hp"](
+        ctypes.c_void_p(ref.ctypes.data), w, h,
+        ctypes.c_void_p(out.ctypes.data),
+    )
+    if rc != 0:
+        raise RuntimeError("native half-pel interpolation failed")
+    return out
+
+
+def me_search_hp(cur, ref, hp, block=16, radius=16, refine=2):
+    """Quarter-pel motion vectors, ``(nbh, nbw, 2)`` int16."""
+    if not hp_available():
+        raise RuntimeError("native sub-pixel motion search not available")
+    cur = np.ascontiguousarray(cur, dtype=np.int32)
+    ref = np.ascontiguousarray(ref, dtype=np.int32)
+    hp = np.ascontiguousarray(hp, dtype=np.int32)
+    h, w = cur.shape
+    nbh, nbw = h // block, w // block
+    mv = np.zeros((nbh, nbw, 2), np.int16)
+    rc = _ENC["search_hp"](
+        ctypes.c_void_p(cur.ctypes.data), ctypes.c_void_p(ref.ctypes.data),
+        ctypes.c_void_p(hp.ctypes.data),
+        w, h, block, radius, refine, ctypes.c_void_p(mv.ctypes.data),
+    )
+    if rc != 0:
+        raise RuntimeError("native sub-pixel motion search failed")
+    return mv
+
+
+def me_predict_hp(hp, mv, block=16):
+    """Prediction plane sampled at quarter-pel vectors."""
+    if not hp_available():
+        raise RuntimeError("native sub-pixel prediction not available")
+    hp = np.ascontiguousarray(hp, dtype=np.int32)
+    mv = np.ascontiguousarray(mv, dtype=np.int16)
+    h, w = hp.shape[0] // 2, hp.shape[1] // 2
+    out = np.zeros((h, w), np.int32)
+    rc = _ENC["predict_hp"](
+        ctypes.c_void_p(hp.ctypes.data), ctypes.c_void_p(mv.ctypes.data),
+        w, h, block, ctypes.c_void_p(out.ctypes.data),
+    )
+    if rc != 0:
+        raise RuntimeError("native sub-pixel prediction failed")
     return out
 
 

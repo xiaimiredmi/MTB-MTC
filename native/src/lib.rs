@@ -1519,3 +1519,483 @@ pub extern "C" fn mt_me_predict(
     }
     0
 }
+
+// ---------------------------------------------------------------------------
+// Sub-pixel motion compensation.
+//
+// `mt_hp_interp` expands a reference plane onto a half-pel grid of (2h, 2w)
+// using the 6-tap filter (1, -5, 20, 20, -5, 1) / 32. A quarter-pel sample is
+// the average of the two neighbouring grid samples, which is the usual
+// "half first, then average" construction. Search and prediction read that one
+// grid, so the encoder and the decoder cannot drift apart.
+// ---------------------------------------------------------------------------
+
+/// Per-8x8-block adaptive quantiser multiplier from a reference plane.
+///
+/// Mirrors the numpy `_aq_table`: |dx| + |dy| averaged over each block, divided
+/// by the frame median, mapped through `1 - strength * log2(ratio)` and
+/// clamped. Version 6 streams derive this in Rust on both sides.
+#[no_mangle]
+pub unsafe extern "C" fn mt_aq_table(
+    refp: *const i32,
+    w: u32,
+    h: u32,
+    block: u32,
+    strength: f64,
+    lo: f64,
+    hi: f64,
+    out: *mut f32,
+) -> i32 {
+    if refp.is_null() || out.is_null() {
+        return -1;
+    }
+    let w = w as usize;
+    let h = h as usize;
+    let block = block as usize;
+    if block == 0 || w < block || h < block {
+        return -1;
+    }
+    let nbh = h / block;
+    let nbw = w / block;
+    let cells = nbh * nbw;
+    let src = std::slice::from_raw_parts(refp, w * h);
+    let dst = std::slice::from_raw_parts_mut(out, cells);
+
+    let mut sums = vec![0f64; cells];
+    for y in 0..nbh * block {
+        let row = y * w;
+        for x in 0..nbw * block {
+            let p = *src.get_unchecked(row + x);
+            let mut g = 0i32;
+            if x + 1 < w {
+                g += (*src.get_unchecked(row + x + 1) - p).abs();
+            }
+            if y + 1 < h {
+                g += (*src.get_unchecked(row + w + x) - p).abs();
+            }
+            *sums.get_unchecked_mut((y / block) * nbw + x / block) += g as f64;
+        }
+    }
+
+    let denom = (block * block) as f64;
+    let mut acts = vec![0f64; cells];
+    for i in 0..cells {
+        acts[i] = sums[i] / denom;
+    }
+    let mut sorted = acts.clone();
+    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let med = if cells % 2 == 0 {
+        (sorted[cells / 2 - 1] + sorted[cells / 2]) * 0.5
+    } else {
+        sorted[cells / 2]
+    } + 1e-6;
+
+    for i in 0..cells {
+        let ratio = (acts[i] / med).clamp(0.25, 4.0);
+        let q = (1.0 - strength * ratio.log2()).clamp(lo, hi);
+        dst[i] = q as f32;
+    }
+    0
+}
+
+#[inline(always)]
+fn hp_tap(t: [i32; 6]) -> i32 {
+    (t[0] - 5 * t[1] + 20 * t[2] + 20 * t[3] - 5 * t[4] + t[5] + 16) >> 5
+}
+
+/// Horizontal 6-tap pass over `rows` output rows, written into a full-size `hh`.
+unsafe fn hp_h_band(
+    src: *const i32,
+    xs: *const usize,
+    w: usize,
+    y0: usize,
+    rows: usize,
+    out: *mut i32,
+) {
+    for y in y0..y0 + rows {
+        let row = y * w;
+        for x in 0..w {
+            let t = [
+                *src.add(row + *xs.add(x)),
+                *src.add(row + *xs.add(w + x)),
+                *src.add(row + *xs.add(2 * w + x)),
+                *src.add(row + *xs.add(3 * w + x)),
+                *src.add(row + *xs.add(4 * w + x)),
+                *src.add(row + *xs.add(5 * w + x)),
+            ];
+            *out.add(row + x) = hp_tap(t);
+        }
+    }
+}
+
+/// Fill the even/odd half-pel grid rows for one band.
+unsafe fn hp_v_band(
+    src: *const i32,
+    hh: *const i32,
+    ys: *const usize,
+    w: usize,
+    ow: usize,
+    h: usize,
+    y0: usize,
+    rows: usize,
+    dst: *mut i32,
+) {
+    for y in y0..y0 + rows {
+        let r0 = *ys.add(y);
+        let r1 = *ys.add(h + y);
+        let r2 = *ys.add(2 * h + y);
+        let r3 = *ys.add(3 * h + y);
+        let r4 = *ys.add(4 * h + y);
+        let r5 = *ys.add(5 * h + y);
+        let row = y * w;
+        for x in 0..w {
+            let base = (2 * y) * ow + 2 * x;
+            *dst.add(base) = *src.add(row + x);
+            *dst.add(base + 1) = *hh.add(row + x);
+            *dst.add(base + ow) = hp_tap([
+                *src.add(r0 + x),
+                *src.add(r1 + x),
+                *src.add(r2 + x),
+                *src.add(r3 + x),
+                *src.add(r4 + x),
+                *src.add(r5 + x),
+            ]);
+            *dst.add(base + ow + 1) = hp_tap([
+                *hh.add(r0 + x),
+                *hh.add(r1 + x),
+                *hh.add(r2 + x),
+                *hh.add(r3 + x),
+                *hh.add(r4 + x),
+                *hh.add(r5 + x),
+            ]);
+        }
+    }
+}
+
+/// Expand a plane to half-pel resolution: out is `(2h) x (2w)` i32.
+#[no_mangle]
+pub unsafe extern "C" fn mt_hp_interp(
+    refp: *const i32,
+    w: u32,
+    h: u32,
+    out: *mut i32,
+) -> i32 {
+    if refp.is_null() || out.is_null() {
+        return -1;
+    }
+    let w = w as usize;
+    let h = h as usize;
+    if w == 0 || h == 0 {
+        return -1;
+    }
+    let src = std::slice::from_raw_parts(refp, w * h);
+    let dst = std::slice::from_raw_parts_mut(out, 4 * w * h);
+    let ow = 2 * w;
+
+    // Clamped tap positions, built once: the inner loops then read straight
+    // from them instead of calling clamp six times per sample.
+    let mut xs = vec![0usize; 6 * w];
+    for k in 0..6 {
+        for x in 0..w {
+            *xs.get_unchecked_mut(k * w + x) =
+                (x as i32 + k as i32 - 2).clamp(0, w as i32 - 1) as usize;
+        }
+    }
+    let mut ys = vec![0usize; 6 * h];
+    for k in 0..6 {
+        for y in 0..h {
+            *ys.get_unchecked_mut(k * h + y) =
+                ((y as i32 + k as i32 - 2).clamp(0, h as i32 - 1) as usize) * w;
+        }
+    }
+
+    // Horizontal halves first; the diagonal half is the vertical filter run
+    // over this row, so the 2-D position is filtered in both directions.
+    let mut hh = vec![0i32; w * h];
+    let nthreads = if w * h < 200_000 { 1 } else { worker_count(h) };
+    if nthreads <= 1 {
+        hp_h_band(src.as_ptr(), xs.as_ptr(), w, 0, h, hh.as_mut_ptr());
+        hp_v_band(src.as_ptr(), hh.as_ptr(), ys.as_ptr(), w, ow, h, 0, h, dst.as_mut_ptr());
+        return 0;
+    }
+
+    let per = (h + nthreads - 1) / nthreads;
+    let srcp = SendCPtr(src.as_ptr());
+    let xsp = SendCPtr(xs.as_ptr());
+    let hpp = SendPtr(hh.as_mut_ptr());
+    std::thread::scope(|scope| {
+        let mut start = 0usize;
+        while start < h {
+            let rows = per.min(h - start);
+            let s = srcp.0 as usize;
+            let x = xsp.0 as usize;
+            let o = hpp.0 as usize;
+            let y0 = start;
+            scope.spawn(move || unsafe {
+                hp_h_band(
+                    s as *const i32,
+                    x as *const usize,
+                    w,
+                    y0,
+                    rows,
+                    o as *mut i32,
+                );
+            });
+            start += rows;
+        }
+    });
+
+    let hcp = SendCPtr(hh.as_ptr());
+    let ysp = SendCPtr(ys.as_ptr());
+    let dsp = SendPtr(dst.as_mut_ptr());
+    std::thread::scope(|scope| {
+        let mut start = 0usize;
+        while start < h {
+            let rows = per.min(h - start);
+            let s = srcp.0 as usize;
+            let hc = hcp.0 as usize;
+            let y = ysp.0 as usize;
+            let d = dsp.0 as usize;
+            let y0 = start;
+            scope.spawn(move || unsafe {
+                hp_v_band(
+                    s as *const i32,
+                    hc as *const i32,
+                    y as *const usize,
+                    w,
+                    ow,
+                    h,
+                    y0,
+                    rows,
+                    d as *mut i32,
+                );
+            });
+            start += rows;
+        }
+    });
+    0
+}
+
+/// Sample the half-pel grid at quarter-pel coordinates `(qx, qy)`.
+#[inline(always)]
+unsafe fn hp_sample(hp: &[i32], w2: usize, h2: usize, qx: i32, qy: i32) -> i32 {
+    let ax = qx >> 1;
+    let ay = qy >> 1;
+    let fx = qx & 1;
+    let fy = qy & 1;
+    let x0 = ax.clamp(0, w2 as i32 - 1) as usize;
+    let y0 = ay.clamp(0, h2 as i32 - 1) as usize;
+    let x1 = (ax + 1).clamp(0, w2 as i32 - 1) as usize;
+    let y1 = (ay + 1).clamp(0, h2 as i32 - 1) as usize;
+    let a = *hp.get_unchecked(y0 * w2 + x0);
+    if fx == 0 && fy == 0 {
+        return a;
+    }
+    let b = *hp.get_unchecked(y0 * w2 + x1);
+    if fx != 0 && fy != 0 {
+        let c = *hp.get_unchecked(y1 * w2 + x0);
+        let d = *hp.get_unchecked(y1 * w2 + x1);
+        return (a + b + c + d + 2) >> 2;
+    }
+    if fx != 0 {
+        return (a + b + 1) >> 1;
+    }
+    let c = *hp.get_unchecked(y1 * w2 + x0);
+    (a + c + 1) >> 1
+}
+
+/// Prediction plane sampled at quarter-pel vectors (`i16`, quarter pixels).
+#[no_mangle]
+pub unsafe extern "C" fn mt_me_predict_hp(
+    hpp: *const i32,
+    mv: *const i16,
+    w: u32,
+    h: u32,
+    block: u32,
+    out_pred: *mut i32,
+) -> i32 {
+    if hpp.is_null() || mv.is_null() || out_pred.is_null() {
+        return -1;
+    }
+    let w = w as usize;
+    let h = h as usize;
+    let block = block as usize;
+    if block == 0 || w < block || h < block {
+        return -1;
+    }
+    let nbh = h / block;
+    let nbw = w / block;
+    let w2 = 2 * w;
+    let h2 = 2 * h;
+    let hp = std::slice::from_raw_parts(hpp, w2 * h2);
+    let mv_p = std::slice::from_raw_parts(mv, nbh * nbw * 2);
+    let out = std::slice::from_raw_parts_mut(out_pred, w * h);
+    for by in 0..nbh {
+        for bx in 0..nbw {
+            let i = by * nbw + bx;
+            let mvx = mv_p[i * 2] as i32;
+            let mvy = mv_p[i * 2 + 1] as i32;
+            for y in 0..block {
+                let qy = ((by * block + y) as i32) * 4 + mvy;
+                let drow = (by * block + y) * w + bx * block;
+                for x in 0..block {
+                    let qx = ((bx * block + x) as i32) * 4 + mvx;
+                    out[drow + x] = hp_sample(hp, w2, h2, qx, qy);
+                }
+            }
+        }
+    }
+    for y in nbh * block..h {
+        for x in 0..w {
+            out[y * w + x] = out[(nbh * block - 1) * w + x];
+        }
+    }
+    for y in 0..h {
+        for x in nbw * block..w {
+            out[y * w + x] = out[y * w + nbw * block - 1];
+        }
+    }
+    0
+}
+
+/// Quarter-pel search: integer seed from `mt_me_search`, then a half-pel ring
+/// and a quarter-pel ring around it. Writes `i16` quarter-pixel vectors.
+#[no_mangle]
+pub unsafe extern "C" fn mt_me_search_hp(
+    curp: *const i32,
+    refp: *const i32,
+    hpp: *const i32,
+    w: u32,
+    h: u32,
+    block: u32,
+    radius: u32,
+    refine: u32,
+    out_mv: *mut i16,
+) -> i32 {
+    if curp.is_null() || refp.is_null() || hpp.is_null() || out_mv.is_null() {
+        return -1;
+    }
+    let w = w as usize;
+    let h = h as usize;
+    let block = block as usize;
+    if block == 0 || w < block || h < block {
+        return -1;
+    }
+    let nbh = h / block;
+    let nbw = w / block;
+    let cells = nbh * nbw;
+
+    let mut coarse = vec![0i8; cells * 2];
+    let rc = mt_me_search(
+        curp,
+        refp,
+        w as u32,
+        h as u32,
+        block as u32,
+        radius,
+        refine,
+        coarse.as_mut_ptr(),
+    );
+    if rc != 0 {
+        return rc;
+    }
+
+    let cur_p = std::slice::from_raw_parts(curp, w * h);
+    let w2 = 2 * w;
+    let h2 = 2 * h;
+    let hp = std::slice::from_raw_parts(hpp, w2 * h2);
+    let mv = std::slice::from_raw_parts_mut(out_mv, cells * 2);
+
+    let sad_q = |bx: usize, by: usize, qx: i32, qy: i32| -> i32 {
+        let mut s = 0i32;
+        for y in 0..block {
+            let row = (by * block + y) * w + bx * block;
+            let sy = ((by * block + y) as i32) * 4 + qy;
+            for x in 0..block {
+                let sx = ((bx * block + x) as i32) * 4 + qx;
+                s += (cur_p[row + x] - unsafe { hp_sample(hp, w2, h2, sx, sy) }).abs();
+            }
+        }
+        s
+    };
+    // Quarter positions need averaged samples, so score them on every second
+    // pixel in each direction; the winner is then used for the full block.
+    let sad_q_sub = |bx: usize, by: usize, qx: i32, qy: i32| -> i32 {
+        let mut s = 0i32;
+        let mut y = 0usize;
+        while y < block {
+            let row = (by * block + y) * w + bx * block;
+            let sy = ((by * block + y) as i32) * 4 + qy;
+            let mut x = 0usize;
+            while x < block {
+                let sx = ((bx * block + x) as i32) * 4 + qx;
+                s += (cur_p[row + x] - unsafe { hp_sample(hp, w2, h2, sx, sy) }).abs();
+                x += 2;
+            }
+            y += 2;
+        }
+        s
+    };
+
+    for by in 0..nbh {
+        for bx in 0..nbw {
+            let i = by * nbw + bx;
+            let imx = coarse[i * 2] as i32;
+            let imy = coarse[i * 2 + 1] as i32;
+            let q0x = imx * 4;
+            let q0y = imy * 4;
+            let mut best = sad_q(bx, by, q0x, q0y);
+            let mut bqx = q0x;
+            let mut bqy = q0y;
+            if best == 0 {
+                mv[i * 2] = bqx.clamp(-32767, 32767) as i16;
+                mv[i * 2 + 1] = bqy.clamp(-32767, 32767) as i16;
+                continue;
+            }
+            for oy in [-2i32, 0, 2] {
+                for ox in [-2i32, 0, 2] {
+                    if ox == 0 && oy == 0 {
+                        continue;
+                    }
+                    let s = sad_q(bx, by, q0x + ox, q0y + oy);
+                    if s < best {
+                        best = s;
+                        bqx = q0x + ox;
+                        bqy = q0y + oy;
+                    }
+                }
+            }
+            let hx = bqx;
+            let hy = bqy;
+            let mut best_sub = i32::MAX;
+            let mut cqx = hx;
+            let mut cqy = hy;
+            for oy in [-1i32, 0, 1] {
+                for ox in [-1i32, 0, 1] {
+                    if ox == 0 && oy == 0 {
+                        continue;
+                    }
+                    let s = sad_q_sub(bx, by, hx + ox, hy + oy);
+                    if s < best_sub {
+                        best_sub = s;
+                        cqx = hx + ox;
+                        cqy = hy + oy;
+                    }
+                }
+            }
+            if best_sub != i32::MAX {
+                // The subsampled score only ranks candidates; the winner has
+                // to beat the full-block integer/half score on the same scale.
+                let full = sad_q(bx, by, cqx, cqy);
+                if full < best {
+                    best = full;
+                    bqx = cqx;
+                    bqy = cqy;
+                }
+            }
+            mv[i * 2] = bqx.clamp(-32767, 32767) as i16;
+            mv[i * 2 + 1] = bqy.clamp(-32767, 32767) as i16;
+        }
+    }
+    0
+}

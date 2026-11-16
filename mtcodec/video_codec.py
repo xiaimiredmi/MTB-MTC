@@ -22,17 +22,22 @@ VHDR2 = struct.Struct("<4sBBBBHHII")
 # Version history. 2: co-located prediction only. 3: a per-frame motion vector
 # table precedes every P frame. 4: the payload is an H.264 stream (optional
 # backend, never the default). 5: motion vectors plus adaptive quantisation,
-# whose table both sides derive from the reference plane.
+# whose table both sides derive from the reference plane. 6: quarter-pixel
+# motion vectors (int16) plus AQ. 7: quarter-pixel vectors without AQ.
 #
 # Version 3 was reused once for AQ without being bumped, so a stream written
-# with AQ off could be read back with AQ on. 5 closes that hole: AQ is on
-# exactly when the version is 5, and nothing else claims it.
+# with AQ off could be read back with AQ on. 5 closed that hole; each later
+# format change gets its own number rather than overloading a flag.
 CO_LOCATED_VERSION = 2
 ME_VERSION = 3
 H264_VERSION = 4
 AQ_VERSION = 5
-ME_VERSIONS = (ME_VERSION, AQ_VERSION)
-VERSIONS_HEAD2 = (2, 3, 4, 5)
+SUBPEL_VERSION = 6
+SUBPEL_NO_AQ_VERSION = 7
+ME_VERSIONS = (3, 5, 6, 7)
+AQ_VERSIONS = (5, 6)
+SUBPEL_VERSIONS = (6, 7)
+VERSIONS_HEAD2 = (2, 3, 4, 5, 6, 7)
 
 SCENE_CUT_SAD = 24.0
 DEFAULT_FPS = 24.0
@@ -46,6 +51,15 @@ ME_ON = os.environ.get("MTCODEC_ME") == "1"
 # 细节块收紧（保画质）。两侧从同一张参考帧算出同一张表，所以一个字节都
 # 不用写进码流。只在运动补偿开着时才启用，因为那时才有参考帧可算。
 AQ_ON = True
+
+# 亚像素运动：参考帧先做一次 6 抽头半像素插值，四分之一像素由相邻半像素
+# 样本线性平均得到；矢量以四分之一像素为单位存成 int16。码流格式因此改变，
+# 版本升到 6（开 AQ）或 7（关 AQ）。MTCODEC_SUBPEL=0 可退回整数像素路径。
+SUBPEL_ON = os.environ.get("MTCODEC_SUBPEL", "1") != "0"
+
+
+def _subpel_ready():
+    return bool(SUBPEL_ON and motion.hp_available())
 
 
 def _aq_table(ref_plane, block=8, strength=0.35, lo=0.70, hi=1.40):
@@ -70,6 +84,15 @@ def _aq_table(ref_plane, block=8, strength=0.35, lo=0.70, hi=1.40):
     ratio = np.clip(act / med, 0.25, 4.0)
     q = 1.0 - strength * np.log2(ratio)
     return np.ascontiguousarray(np.clip(q, lo, hi).astype(np.float32))
+
+
+def _aq_from_ref(ref_plane, native):
+    """AQ multipliers: the Rust path for version 6, numpy for older streams."""
+    if native and fastenc.aq_available():
+        tab = fastenc.aq_table(ref_plane)
+        if tab is not None:
+            return np.ascontiguousarray(tab, dtype=np.float32)
+    return _aq_table(ref_plane)
 
 # 三个平面彼此独立，交给 Rust 后 GIL 已释放，可以真并行跑。
 _POOL = ThreadPoolExecutor(max_workers=3, thread_name_prefix="mtc-enc")
@@ -188,13 +211,33 @@ def _planes_to_rgb(planes, subsample, out_h, out_w):
     return color.to_uint8(np.stack([r, g, b], axis=2)[:out_h, :out_w])
 
 
-def _predict_from(ref, mvs):
+def _chroma_vectors(mvs, ref, subpel):
+    """Chroma vectors and block size: half resolution when the planes are 4:2:0.
+
+    Integer-vector streams keep the historical scaling even for 4:4:4 so old
+    files still decode exactly; sub-pixel streams use the plane shape.
+    """
+    if subpel and ref[0].shape == ref[1].shape:
+        return mvs, motion.BLOCK
+    if subpel:
+        return motion.scale_sub(mvs, 2), motion.BLOCK // 2
+    return motion.scale(mvs, 2), motion.BLOCK // 2
+
+
+def _predict_from(ref, mvs, subpel=False):
     """Rebuild the prediction planes from a reference frame and a vector table."""
-    chroma = motion.scale(mvs, 2)
+    cmv, cblk = _chroma_vectors(mvs, ref, subpel)
+    if subpel:
+        hps = [motion.hp_plane(ref[i]) for i in range(3)]
+        return [
+            motion.predict_subpel(hps[0], mvs, motion.BLOCK),
+            motion.predict_subpel(hps[1], cmv, cblk),
+            motion.predict_subpel(hps[2], cmv, cblk),
+        ]
     return [
         motion.predict(ref[0], mvs, motion.BLOCK),
-        motion.predict(ref[1], chroma, motion.BLOCK // 2),
-        motion.predict(ref[2], chroma, motion.BLOCK // 2),
+        motion.predict(ref[1], cmv, cblk),
+        motion.predict(ref[2], cmv, cblk),
     ]
 
 
@@ -209,8 +252,17 @@ def _predict_planes(planes, ref):
         return [ref[i] for i in range(3)], None
     if planes[0].shape != ref[0].shape:
         return [ref[i] for i in range(3)], None
+    if _subpel_ready():
+        hps = [motion.hp_plane(ref[i]) for i in range(3)]
+        mvs = motion.search_subpel(planes[0], ref[0], hps[0])
+        cmv, cblk = _chroma_vectors(mvs, ref, True)
+        return [
+            motion.predict_subpel(hps[0], mvs, motion.BLOCK),
+            motion.predict_subpel(hps[1], cmv, cblk),
+            motion.predict_subpel(hps[2], cmv, cblk),
+        ], mvs
     mvs = motion.search(planes[0], ref[0])
-    return _predict_from(ref, mvs), mvs
+    return _predict_from(ref, mvs, False), mvs
 
 
 def _encode_h264(frames, quality, fps, audio, gop, collect, progress):
@@ -276,6 +328,7 @@ def encode_video(frames, quality=85, subsample="420", gop=12, collect=None,
     mm = ModeModel(3)
     fe = fastenc.PlaneEncoder(m, mm, 3) if fastenc.available() else None
     fprep = fastenc.prep_available()
+    subpel = _subpel_ready()
     parts = []
     stats = []
     ref = None
@@ -305,8 +358,11 @@ def encode_video(frames, quality=85, subsample="420", gop=12, collect=None,
             else:
                 preds_i, mvs = _predict_planes(planes, ref)
                 preds = [p.astype(np.float64) for p in preds_i]
-                aqs = [_aq_table(ref[i]) for i in range(3)] if (AQ_ON and mvs is not None) \
-                    else [None, None, None]
+                if AQ_ON and mvs is not None:
+                    native_aq = bool(subpel)
+                    aqs = [_aq_from_ref(ref[i], native_aq) for i in range(3)]
+                else:
+                    aqs = [None, None, None]
                 qzs = list(_POOL.map(
                     lambda i: fastenc.quantize_plane(planes[i], steps[i], preds[i], aqs[i]),
                     range(3)))
@@ -325,7 +381,7 @@ def encode_video(frames, quality=85, subsample="420", gop=12, collect=None,
                 stats.append({"frame": p_idx, "type": "i" if p_intra else "p",
                               "bytes": len(payload) + 5})
                 pending = None
-            mv_blob = motion.pack(mvs) if mvs is not None else b""
+            mv_blob = motion.pack(mvs, subpel) if mvs is not None else b""
             pending = (_ENT_POOL.submit(fe.encode, qzs, not intra), intra, idx, mv_blob)
         else:
             enc = ac.Encoder()
@@ -359,6 +415,8 @@ def encode_video(frames, quality=85, subsample="420", gop=12, collect=None,
 
     if not ME_ON:
         version = CO_LOCATED_VERSION
+    elif subpel:
+        version = SUBPEL_VERSION if AQ_ON else SUBPEL_NO_AQ_VERSION
     elif AQ_ON:
         version = AQ_VERSION
     else:
@@ -397,7 +455,8 @@ def _parse_heads(data):
             "fps": (fps100 / 100.0) if fps100 else DEFAULT_FPS,
             "pos": pos + 4 + alen,
             "me": ver in ME_VERSIONS,
-            "aq": ver >= AQ_VERSION,
+            "aq": ver in AQ_VERSIONS,
+            "subpel": ver in SUBPEL_VERSIONS,
             "codec": "h264" if ver == H264_VERSION else "dct",
         })
     elif ver != 1:
@@ -444,9 +503,10 @@ def iter_frames(data, progress=None, limit=None, stat_sink=None, head=None):
         if not intra and info.get("me") and ref is not None:
             nbh = ref[0].shape[0] // motion.BLOCK
             nbw = ref[0].shape[1] // motion.BLOCK
-            need = nbh * nbw * 2
+            subpel = bool(info.get("subpel"))
+            need = nbh * nbw * (4 if subpel else 2)
             if len(payload) >= need:
-                mvs = motion.unpack(payload[:need], nbh, nbw)
+                mvs = motion.unpack(payload[:need], nbh, nbw, subpel)
                 payload = payload[need:]
         dec = ac.Decoder(payload)
         shapes = None
@@ -463,9 +523,10 @@ def iter_frames(data, progress=None, limit=None, stat_sink=None, head=None):
         preds_i = None
         aqs = None
         if not intra and mvs is not None and ref is not None:
-            preds_i = _predict_from(ref, mvs)
+            preds_i = _predict_from(ref, mvs, bool(info.get("subpel")))
             if info.get("aq"):
-                aqs = [_aq_table(ref[i]) for i in range(3)]
+                native_aq = bool(info.get("subpel"))
+                aqs = [_aq_from_ref(ref[i], native_aq) for i in range(3)]
         if fast is not None:
             fast.attach(dec)
         for i in range(3):
@@ -545,7 +606,8 @@ def probe_video(data):
         info["subsample_420"] = bool(flag)
         info["version"] = ver
         info["me"] = ver in ME_VERSIONS
-        info["aq"] = ver >= AQ_VERSION
+        info["aq"] = ver in AQ_VERSIONS
+        info["subpel"] = ver in SUBPEL_VERSIONS
         info["codec"] = "h264" if ver == H264_VERSION else "dct"
         info["fps"] = (fps100 / 100.0) if fps100 else DEFAULT_FPS
         info["has_audio"] = alen > 0
