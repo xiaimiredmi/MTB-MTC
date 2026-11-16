@@ -135,10 +135,14 @@ fn cmd_encode(args: &[String]) -> Result<(), String> {
     }
     let (input, output) = (&args[2], &args[3]);
     let mut q = 85u8;
+    let mut sub = "420".to_string();
     let mut i = 4;
     while i < args.len() {
         if args[i] == "-q" && i + 1 < args.len() {
             q = args[i + 1].parse().map_err(|_| "bad -q".to_string())?;
+            i += 2;
+        } else if args[i] == "-s" && i + 1 < args.len() {
+            sub = args[i + 1].clone();
             i += 2;
         } else {
             return Err(format!("unknown argument: {}", args[i]));
@@ -147,8 +151,10 @@ fn cmd_encode(args: &[String]) -> Result<(), String> {
     let (w, h, ch, px) = read_ppm(input)?;
     let blob = if ch == 1 {
         codec::encode_gray(w, h, &px, q)
-    } else {
+    } else if sub == "444" {
         codec::encode_rgb444(w, h, &px, q)
+    } else {
+        codec::encode_rgb420(w, h, &px, q)
     };
     fs::write(output, &blob).map_err(|e| format!("{}: {}", output, e))?;
     println!("encoded {}x{} -> {} ({} bytes)", w, h, output, blob.len());
@@ -172,6 +178,11 @@ fn cmd_decode(args: &[String]) -> Result<(), String> {
         }
         1 => {
             let img = codec::decode_rgb444(&data)?;
+            write_ppm(output, img.width, img.height, 3, &img.pixels)?;
+            println!("decoded {}x{} -> {}", img.width, img.height, output);
+        }
+        2 => {
+            let img = codec::decode_rgb420(&data)?;
             write_ppm(output, img.width, img.height, 3, &img.pixels)?;
             println!("decoded {}x{} -> {}", img.width, img.height, output);
         }

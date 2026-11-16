@@ -256,6 +256,156 @@ pub fn decode_rgb444(data: &[u8]) -> Result<Rgb, String> {
     })
 }
 
+fn enc_plane(
+    enc: &mut Enc,
+    probs: &mut [i16],
+    planes: usize,
+    pl: usize,
+    plane: &[i32],
+    pw: usize,
+    ph: usize,
+    step: &[[f64; 8]; 8],
+) {
+    let m = dct_matrix();
+    for by in 0..ph / 8 {
+        let mut prev = 0i32;
+        for bx in 0..pw / 8 {
+            let mut blk = [[0.0f64; 8]; 8];
+            for y in 0..8 {
+                for x in 0..8 {
+                    blk[x][y] = plane[(by * 8 + y) * pw + bx * 8 + x] as f64;
+                }
+            }
+            let coef = fdct(&blk, &m);
+            let mut qz = [0i32; 64];
+            for k in 0..64 {
+                let (u, v) = ZZ[k];
+                qz[k] = rint(coef[u][v] / step[u][v]) as i32;
+            }
+            enc_block(enc, probs, planes, pl, &qz, prev);
+            prev = qz[0];
+        }
+    }
+}
+
+fn dec_plane(
+    dec: &mut Dec,
+    probs: &mut [i16],
+    planes: usize,
+    pl: usize,
+    pw: usize,
+    ph: usize,
+    step: &[[f64; 8]; 8],
+) -> Vec<i32> {
+    let m = dct_matrix();
+    let mut plane = vec![0i32; pw * ph];
+    for by in 0..ph / 8 {
+        let mut prev = 0i32;
+        for bx in 0..pw / 8 {
+            let qz = dec_block(dec, probs, planes, pl, prev);
+            prev = qz[0];
+            let mut coef = [[0.0f64; 8]; 8];
+            for k in 0..64 {
+                let (u, v) = ZZ[k];
+                coef[u][v] = qz[k] as f64 * step[u][v];
+            }
+            let blk = idct(&coef, &m);
+            for y in 0..8 {
+                for x in 0..8 {
+                    plane[(by * 8 + y) * pw + bx * 8 + x] = rint(blk[x][y]) as i32;
+                }
+            }
+        }
+    }
+    plane
+}
+
+pub fn encode_rgb420(w: usize, h: usize, rgb: &[u8], quality: u8) -> Vec<u8> {
+    let pw = align(w, 16);
+    let ph = align(h, 16);
+    let cw = pw / 2;
+    let ch = ph / 2;
+    let mut y = vec![0i32; pw * ph];
+    let mut co = vec![0i32; cw * ch];
+    let mut cg = vec![0i32; cw * ch];
+    for yy in 0..ph {
+        let sy = yy.min(h - 1);
+        for xx in 0..pw {
+            let sx = xx.min(w - 1);
+            let i = (sy * w + sx) * 3;
+            let (a, b, c) = fwd(rgb[i] as i32, rgb[i + 1] as i32, rgb[i + 2] as i32);
+            y[yy * pw + xx] = a;
+            let p = (yy / 2) * cw + xx / 2;
+            co[p] += b;
+            cg[p] += c;
+        }
+    }
+    for p in 0..cw * ch {
+        co[p] >>= 2;
+        cg[p] >>= 2;
+    }
+    let steps = plane_steps(quality);
+    let mut probs = new_probs(3);
+    let mut enc = Enc::new();
+    enc_plane(&mut enc, &mut probs, 3, 0, &y, pw, ph, &steps[0]);
+    enc_plane(&mut enc, &mut probs, 3, 1, &co, cw, ch, &steps[1]);
+    enc_plane(&mut enc, &mut probs, 3, 2, &cg, cw, ch, &steps[2]);
+    let payload = enc.finish();
+    let mut out = Vec::with_capacity(HDR + payload.len());
+    out.extend_from_slice(MAGIC);
+    out.push(1);
+    out.push(2); // rgb420 lossy
+    out.push(quality.min(100).max(1));
+    out.push(0);
+    out.extend_from_slice(&(w as u16).to_le_bytes());
+    out.extend_from_slice(&(h as u16).to_le_bytes());
+    out.extend_from_slice(&payload);
+    out
+}
+
+pub fn decode_rgb420(data: &[u8]) -> Result<Rgb, String> {
+    if data.len() < HDR || &data[0..4] != MAGIC {
+        return Err("not an MTC image".into());
+    }
+    if data[5] != 2 {
+        return Err(format!("mode {} is not rgb420 lossy", data[5]));
+    }
+    let quality = data[6];
+    let w = u16::from_le_bytes([data[8], data[9]]) as usize;
+    let h = u16::from_le_bytes([data[10], data[11]]) as usize;
+    let pw = align(w, 16);
+    let ph = align(h, 16);
+    let cw = pw / 2;
+    let ch = ph / 2;
+    let steps = plane_steps(quality);
+    let mut probs = new_probs(3);
+    let mut dec = Dec::new(&data[HDR..]);
+    let y = dec_plane(&mut dec, &mut probs, 3, 0, pw, ph, &steps[0]);
+    let co = dec_plane(&mut dec, &mut probs, 3, 1, cw, ch, &steps[1]);
+    let cg = dec_plane(&mut dec, &mut probs, 3, 2, cw, ch, &steps[2]);
+    let mut pixels = vec![0u8; w * h * 3];
+    for yy in 0..h {
+        for xx in 0..w {
+            let p = yy * pw + xx;
+            let c = (yy / 2) * cw + xx / 2;
+            let (r, g, b) = inv(
+                y[p].clamp(0, 255),
+                co[c].clamp(-300, 300),
+                cg[c].clamp(-300, 300),
+            );
+            let o = (yy * w + xx) * 3;
+            pixels[o] = r.clamp(0, 255) as u8;
+            pixels[o + 1] = g.clamp(0, 255) as u8;
+            pixels[o + 2] = b.clamp(0, 255) as u8;
+        }
+    }
+    Ok(Rgb {
+        width: w,
+        height: h,
+        pixels,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
