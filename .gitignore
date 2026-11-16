@@ -44,3 +44,4 @@ desktop.ini
 *.key
 *.pem
 rust/target/
+bin/
