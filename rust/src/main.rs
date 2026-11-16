@@ -72,51 +72,23 @@ fn cmd_info(path: &str) -> Result<(), String> {
 }
 
 fn read_ppm(path: &str) -> Result<(usize, usize, usize, Vec<u8>), String> {
-    let data = fs::read(path).map_err(|e| format!("{}: {}", path, e))?;
-    if data.len() < 2 || &data[0..2] != b"P5" && &data[0..2] != b"P6" {
-        return Err("only binary PGM/PPM (P5/P6) input is supported for now".into());
-    }
-    let ch = if &data[0..2] == b"P6" { 3 } else { 1 };
-    let mut i = 2usize;
-    let mut nums = Vec::new();
-    while nums.len() < 3 {
-        while i < data.len() && (data[i] as char).is_whitespace() {
-            i += 1;
-        }
-        if i < data.len() && data[i] == b'#' {
-            while i < data.len() && data[i] != b'\n' {
-                i += 1;
-            }
-            continue;
-        }
-        let start = i;
-        while i < data.len() && data[i].is_ascii_digit() {
-            i += 1;
-        }
-        if start == i {
-            return Err("bad PNM header".into());
-        }
-        nums.push(
-            std::str::from_utf8(&data[start..i])
-                .unwrap()
-                .parse::<usize>()
-                .map_err(|_| "bad PNM header".to_string())?,
-        );
-    }
-    i += 1;
-    let (w, h) = (nums[0], nums[1]);
-    let need = w * h * ch;
-    if data.len() < i + need {
-        return Err("truncated PNM body".into());
-    }
-    Ok((w, h, ch, data[i..i + need].to_vec()))
+    let img = image::open(path).map_err(|e| format!("{}: {}", path, e))?;
+    let rgb = img.to_rgb8();
+    let (w, h) = (rgb.width() as usize, rgb.height() as usize);
+    Ok((w, h, 3, rgb.into_raw()))
 }
 
 fn write_ppm(path: &str, w: usize, h: usize, ch: usize, px: &[u8]) -> Result<(), String> {
-    let magic = if ch == 3 { "P6" } else { "P5" };
-    let mut out = format!("{}\n{} {}\n255\n", magic, w, h).into_bytes();
-    out.extend_from_slice(px);
-    fs::write(path, out).map_err(|e| format!("{}: {}", path, e))
+    let img = if ch == 3 {
+        let buf = image::RgbImage::from_raw(w as u32, h as u32, px.to_vec())
+            .ok_or_else(|| "bad rgb buffer".to_string())?;
+        image::DynamicImage::ImageRgb8(buf)
+    } else {
+        let buf = image::GrayImage::from_raw(w as u32, h as u32, px.to_vec())
+            .ok_or_else(|| "bad gray buffer".to_string())?;
+        image::DynamicImage::ImageLuma8(buf)
+    };
+    img.save(path).map_err(|e| format!("{}: {}", path, e))
 }
 
 fn usage() -> ExitCode {
