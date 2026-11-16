@@ -8,6 +8,7 @@ use std::fs;
 use std::process::ExitCode;
 
 mod arith;
+mod transform;
 
 const MAGIC: &[u8; 4] = b"MTB1";
 const HDR: usize = 12;
