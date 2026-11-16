@@ -69,7 +69,7 @@ def _load():
             ctypes.POINTER(ctypes.c_uint32),
             ctypes.c_void_p, ctypes.c_void_p,
             ctypes.c_uint32, ctypes.c_uint32, ctypes.c_uint32, ctypes.c_uint32,
-            ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p,
+            ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p,
             ctypes.c_int, ctypes.c_int,
         ]
         rgb.restype = ctypes.c_int
@@ -184,7 +184,7 @@ class PlaneDecoder:
             raise RuntimeError("native decoder failed (rc=%d)" % rc)
         return out
 
-    def decode_plane_pixels(self, pl, hb, wb, inter, step, pred, clip):
+    def decode_plane_pixels(self, pl, hb, wb, inter, step, pred, clip, aq=None):
         """Decode + dequantise + IDCT (+ prediction) + clip, straight to pixels."""
         if self.dec is None or self._buf is None:
             raise RuntimeError("native decoder not attached")
@@ -197,13 +197,17 @@ class PlaneDecoder:
         if pred is not None:
             pred_arr = np.ascontiguousarray(pred, dtype=np.int32)
             pred_ptr = ctypes.c_void_p(pred_arr.ctypes.data)
+        aq_ptr = None
+        if aq is not None:
+            aq_arr = np.ascontiguousarray(aq, dtype=np.float32)
+            aq_ptr = ctypes.c_void_p(aq_arr.ctypes.data)
         rc = _LIB._recon(
             ctypes.c_void_p(ctypes.addressof(self._buf)), len(self._buf),
             ctypes.byref(pos), ctypes.byref(rng), ctypes.byref(cde),
             ctypes.c_void_p(self.probs.ctypes.data),
             ctypes.c_void_p(self.offsets.ctypes.data),
             int(pl), int(hb), int(wb), 1 if inter else 0,
-            ctypes.c_void_p(tab.ctypes.data), pred_ptr,
+            ctypes.c_void_p(tab.ctypes.data), pred_ptr, aq_ptr,
             ctypes.c_void_p(out.ctypes.data),
             int(clip[0]), int(clip[1]),
         )

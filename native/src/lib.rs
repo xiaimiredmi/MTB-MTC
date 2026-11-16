@@ -319,6 +319,7 @@ pub unsafe extern "C" fn mt_dec_recon_plane(
     inter: u32,
     step: *const f64,
     pred: *const i32,
+    aq: *const f32,
     out_plane: *mut i32,
     clip_lo: i32,
     clip_hi: i32,
@@ -532,6 +533,7 @@ unsafe fn recon_band(
     let pw = ctx.pw;
     let out = ctx.out;
     let pred = ctx.pred;
+    let aq = ctx.aq;
     let clip_lo = ctx.clip_lo as f64;
     let clip_hi = ctx.clip_hi as f64;
 
@@ -541,6 +543,14 @@ unsafe fn recon_band(
     for r in 0..rows {
         for c in 0..nb {
             let slot = (r * nb + c) * 64;
+            // Per-block step multiplier: flat blocks quantise coarser, detailed
+            // ones finer. Both sides derive it from the same reference plane,
+            // so it never has to be written into the stream.
+            let mul = if aq.is_null() {
+                1.0f64
+            } else {
+                *aq.add(r * nb + c) as f64
+            };
             for u in 0..8usize {
                 for v in 0..8usize {
                     coef[u][v] = 0.0;
@@ -549,7 +559,7 @@ unsafe fn recon_band(
             for k in 0..64usize {
                 let (u, v) = zz[k];
                 let q = *ctx.qz.add(slot + k);
-                coef[u][v] = q as f64 * *step_tab.get_unchecked(u * 8 + v);
+                coef[u][v] = q as f64 * *step_tab.get_unchecked(u * 8 + v) * mul;
             }
             idct_block(&coef, &m, &mut recon);
 
@@ -580,6 +590,7 @@ struct ReconCtx {
     qz: *const i32,
     step: *const f64,
     pred: *const i32,
+    aq: *const f32,
     out: *mut i32,
     pw: usize,
     nb: usize,
@@ -602,6 +613,7 @@ pub unsafe extern "C" fn mt_dec_recon_plane_p(
     inter: u32,
     step: *const f64,
     pred: *const i32,
+    aq: *const f32,
     out_plane: *mut i32,
     clip_lo: i32,
     clip_hi: i32,
@@ -665,6 +677,7 @@ pub unsafe extern "C" fn mt_dec_recon_plane_p(
         qz: qz_all.as_ptr(),
         step,
         pred,
+        aq,
         out: out_plane,
         pw: nb * 8,
         nb,
@@ -692,6 +705,11 @@ pub unsafe extern "C" fn mt_dec_recon_plane_p(
                             std::ptr::null()
                         } else {
                             ctx2.pred.add(base * 8 * ctx2.pw)
+                        },
+                        aq: if ctx2.aq.is_null() {
+                            std::ptr::null()
+                        } else {
+                            ctx2.aq.add(base * ctx2.nb)
                         },
                         out: ctx2.out.add(base * 8 * ctx2.pw),
                         pw: ctx2.pw,
@@ -1079,6 +1097,7 @@ pub extern "C" fn mt_enc_quant_plane(
     wb: u32,
     step: *const f64,
     pred: *const f64,
+    aq: *const f32,
     out_qz: *mut i32,
 ) -> i32 {
     if plane.is_null() || step.is_null() || out_qz.is_null() {
@@ -1102,10 +1121,19 @@ pub extern "C" fn mt_enc_quant_plane(
     } else {
         Some(unsafe { std::slice::from_raw_parts(pred, ph * pw) })
     };
+    let aqp = if aq.is_null() {
+        None
+    } else {
+        Some(unsafe { std::slice::from_raw_parts(aq, hb * wb) })
+    };
     let out = unsafe { std::slice::from_raw_parts_mut(out_qz, hb * wb * 64) };
 
     for r in 0..hb {
         for c in 0..wb {
+            let mul = match aqp {
+                Some(a) => (unsafe { *a.get_unchecked(r * wb + c) }) as f64,
+                None => 1.0,
+            };
             let mut blk = [[0.0f64; 8]; 8];
             for x in 0..8usize {
                 let row = (r * 8 + x) * pw + c * 8;
@@ -1134,7 +1162,7 @@ pub extern "C" fn mt_enc_quant_plane(
             let base = (r * wb + c) * 64;
             for k in 0..64usize {
                 let (u, v) = zz[k];
-                out[base + k] = rint(coeff[u][v] / st[u][v]) as i32;
+                out[base + k] = rint(coeff[u][v] / (st[u][v] * mul)) as i32;
             }
         }
     }
@@ -1148,6 +1176,7 @@ pub extern "C" fn mt_enc_recon_plane(
     wb: u32,
     step: *const f64,
     pred: *const i32,
+    aq: *const f32,
     out_plane: *mut i32,
     clip_lo: i32,
     clip_hi: i32,
@@ -1173,15 +1202,24 @@ pub extern "C" fn mt_enc_recon_plane(
     } else {
         Some(unsafe { std::slice::from_raw_parts(pred, ph * pw) })
     };
+    let aqp = if aq.is_null() {
+        None
+    } else {
+        Some(unsafe { std::slice::from_raw_parts(aq, hb * wb) })
+    };
     let out = unsafe { std::slice::from_raw_parts_mut(out_plane, ph * pw) };
 
     for r in 0..hb {
         for c in 0..wb {
             let base = (r * wb + c) * 64;
+            let mul = match aqp {
+                Some(a) => (unsafe { *a.get_unchecked(r * wb + c) }) as f64,
+                None => 1.0,
+            };
             let mut coeff = [[0.0f64; 8]; 8];
             for k in 0..64usize {
                 let (u, v) = zz[k];
-                coeff[u][v] = q[base + k] as f64 * st[u][v];
+                coeff[u][v] = q[base + k] as f64 * st[u][v] * mul;
             }
             let mut blk = [[0.0f64; 8]; 8];
             idct_block(&coeff, &m, &mut blk);

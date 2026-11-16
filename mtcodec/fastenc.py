@@ -56,13 +56,13 @@ def _bind(lib):
     quant.restype = ctypes.c_int
     quant.argtypes = [
         ctypes.c_void_p, ctypes.c_uint32, ctypes.c_uint32,
-        ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p,
+        ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p,
     ]
     recon.restype = ctypes.c_int
     recon.argtypes = [
         ctypes.c_void_p, ctypes.c_uint32, ctypes.c_uint32,
         ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p,
-        ctypes.c_int, ctypes.c_int,
+        ctypes.c_void_p, ctypes.c_int, ctypes.c_int,
     ]
     me = None
     me_pred = None
@@ -219,7 +219,7 @@ class PlaneEncoder:
         return data
 
 
-def quantize_plane(plane, step, pred=None):
+def quantize_plane(plane, step, pred=None, aq=None):
     """Forward DCT + quantise one plane into hb*wb*64 zig-zag coefficients."""
     if _ENC is None:
         raise RuntimeError("native encoder not available")
@@ -231,9 +231,13 @@ def quantize_plane(plane, step, pred=None):
     if pred is not None:
         pa = np.ascontiguousarray(pred, dtype=np.float64)
         pred_ptr = ctypes.c_void_p(pa.ctypes.data)
+    aq_ptr = None
+    if aq is not None:
+        aqa = np.ascontiguousarray(aq, dtype=np.float32)
+        aq_ptr = ctypes.c_void_p(aqa.ctypes.data)
     rc = _ENC["quant"](
         ctypes.c_void_p(src.ctypes.data), hb, wb,
-        ctypes.c_void_p(tab.ctypes.data), pred_ptr,
+        ctypes.c_void_p(tab.ctypes.data), pred_ptr, aq_ptr,
         ctypes.c_void_p(out.ctypes.data),
     )
     if rc != 0:
@@ -241,7 +245,7 @@ def quantize_plane(plane, step, pred=None):
     return out
 
 
-def recon_plane(qz, step, pred, clip):
+def recon_plane(qz, step, pred, clip, aq=None):
     """Dequantise + inverse DCT (+ prediction) + clip into a pixel plane."""
     if _ENC is None:
         raise RuntimeError("native encoder not available")
@@ -253,9 +257,13 @@ def recon_plane(qz, step, pred, clip):
     if pred is not None:
         pa = np.ascontiguousarray(pred, dtype=np.int32)
         pred_ptr = ctypes.c_void_p(pa.ctypes.data)
+    aq_ptr = None
+    if aq is not None:
+        aqa = np.ascontiguousarray(aq, dtype=np.float32)
+        aq_ptr = ctypes.c_void_p(aqa.ctypes.data)
     rc = _ENC["recon"](
         ctypes.c_void_p(q.ctypes.data), hb, wb,
-        ctypes.c_void_p(tab.ctypes.data), pred_ptr,
+        ctypes.c_void_p(tab.ctypes.data), pred_ptr, aq_ptr,
         ctypes.c_void_p(out.ctypes.data),
         int(clip[0]), int(clip[1]),
     )

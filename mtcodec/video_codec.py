@@ -34,6 +34,35 @@ DEFAULT_FPS = 24.0
 # 环境变量 MTCODEC_ME=1 打开。
 ME_ON = os.environ.get("MTCODEC_ME") == "1"
 
+# 自适应量化：从参考帧的局部梯度算每块的步长乘子。平坦块放宽（省比特），
+# 细节块收紧（保画质）。两侧从同一张参考帧算出同一张表，所以一个字节都
+# 不用写进码流。只在运动补偿开着时才启用，因为那时才有参考帧可算。
+AQ_ON = True
+
+
+def _aq_table(ref_plane, block=8, strength=0.35, lo=0.70, hi=1.40):
+    """Per-8x8-block quantiser multiplier derived from the reference plane.
+
+    Pure integer/float numpy on both sides of the codec, so the encoder and
+    the decoder arrive at bit-identical tables without any signalling.
+    """
+    h, w = ref_plane.shape
+    nbh, nbw = h // block, w // block
+    if nbh < 1 or nbw < 1:
+        return None
+    src = np.ascontiguousarray(ref_plane, dtype=np.int32)
+    gx = np.abs(np.diff(src, axis=1))
+    gy = np.abs(np.diff(src, axis=0))
+    g = np.zeros((h, w), np.int32)
+    g[:, : gx.shape[1]] += gx
+    g[: gy.shape[0], :] += gy
+    g = g[: nbh * block, : nbw * block]
+    act = g.reshape(nbh, block, nbw, block).mean(axis=(1, 3))
+    med = float(np.median(act)) + 1e-6
+    ratio = np.clip(act / med, 0.25, 4.0)
+    q = 1.0 - strength * np.log2(ratio)
+    return np.ascontiguousarray(np.clip(q, lo, hi).astype(np.float32))
+
 # 三个平面彼此独立，交给 Rust 后 GIL 已释放，可以真并行跑。
 _POOL = ThreadPoolExecutor(max_workers=3, thread_name_prefix="mtc-enc")
 # 熵编码是单一比特流、只能一帧一帧串行；放后台线程，好让它与下一帧的
@@ -268,8 +297,10 @@ def encode_video(frames, quality=85, subsample="420", gop=12, collect=None,
             else:
                 preds_i, mvs = _predict_planes(planes, ref)
                 preds = [p.astype(np.float64) for p in preds_i]
+                aqs = [_aq_table(ref[i]) for i in range(3)] if (AQ_ON and mvs is not None) \
+                    else [None, None, None]
                 qzs = list(_POOL.map(
-                    lambda i: fastenc.quantize_plane(planes[i], steps[i], preds[i]),
+                    lambda i: fastenc.quantize_plane(planes[i], steps[i], preds[i], aqs[i]),
                     range(3)))
                 qz_effs = []
                 for qz in qzs:
@@ -277,7 +308,7 @@ def encode_video(frames, quality=85, subsample="420", gop=12, collect=None,
                     qz_effs.append(qz * (1 - flat[:, :, None]))
                 recon = list(_POOL.map(
                     lambda i: fastenc.recon_plane(qz_effs[i], steps[i], preds_i[i],
-                                                  color.CLIP[i]),
+                                                  color.CLIP[i], aqs[i]),
                     range(3)))
             if pending is not None:
                 fut, p_intra, p_idx, p_mv = pending
@@ -415,8 +446,11 @@ def iter_frames(data, progress=None, limit=None, stat_sink=None, head=None):
                 shapes = [(ph, pw)] * 3
         recon = []
         preds_i = None
+        aqs = None
         if not intra and mvs is not None and ref is not None:
             preds_i = _predict_from(ref, mvs)
+            if AQ_ON:
+                aqs = [_aq_table(ref[i]) for i in range(3)]
         if fast is not None:
             fast.attach(dec)
         for i in range(3):
@@ -438,7 +472,8 @@ def iter_frames(data, progress=None, limit=None, stat_sink=None, head=None):
                 if fast is not None:
                     recon.append(fast.decode_plane_pixels(
                         i, ref[i].shape[0] // 8, ref[i].shape[1] // 8, True,
-                        s, pred, color.CLIP[i]))
+                        s, pred, color.CLIP[i],
+                        aqs[i] if aqs is not None else None))
                 else:
                     recon.append(_dec_inter(dec, mm, m, i, ref[i].shape, ref[i], s)[1])
         if fast is not None:
