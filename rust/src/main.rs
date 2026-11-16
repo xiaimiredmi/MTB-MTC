@@ -73,13 +73,34 @@ fn cmd_info(path: &str) -> Result<(), String> {
 
 fn read_ppm(path: &str) -> Result<(usize, usize, usize, Vec<u8>), String> {
     let img = image::open(path).map_err(|e| format!("{}: {}", path, e))?;
-    let rgb = img.to_rgb8();
-    let (w, h) = (rgb.width() as usize, rgb.height() as usize);
-    Ok((w, h, 3, rgb.into_raw()))
+    let has_alpha = img.color().has_alpha();
+    if has_alpha {
+        let rgba = img.to_rgba8();
+        let (w, h) = (rgba.width() as usize, rgba.height() as usize);
+        Ok((w, h, 4, rgba.into_raw()))
+    } else {
+        let rgb = img.to_rgb8();
+        let (w, h) = (rgb.width() as usize, rgb.height() as usize);
+        Ok((w, h, 3, rgb.into_raw()))
+    }
+}
+
+fn alpha_png(w: usize, h: usize, alpha: &[u8]) -> Result<Vec<u8>, String> {
+    let buf = image::GrayImage::from_raw(w as u32, h as u32, alpha.to_vec())
+        .ok_or_else(|| "bad alpha buffer".to_string())?;
+    let mut out = Vec::new();
+    image::DynamicImage::ImageLuma8(buf)
+        .write_to(&mut std::io::Cursor::new(&mut out), image::ImageFormat::Png)
+        .map_err(|e| e.to_string())?;
+    Ok(out)
 }
 
 fn write_ppm(path: &str, w: usize, h: usize, ch: usize, px: &[u8]) -> Result<(), String> {
-    let img = if ch == 3 {
+    let img = if ch == 4 {
+        let buf = image::RgbaImage::from_raw(w as u32, h as u32, px.to_vec())
+            .ok_or_else(|| "bad rgba buffer".to_string())?;
+        image::DynamicImage::ImageRgba8(buf)
+    } else if ch == 3 {
         let buf = image::RgbImage::from_raw(w as u32, h as u32, px.to_vec())
             .ok_or_else(|| "bad rgb buffer".to_string())?;
         image::DynamicImage::ImageRgb8(buf)
@@ -121,13 +142,35 @@ fn cmd_encode(args: &[String]) -> Result<(), String> {
         }
     }
     let (w, h, ch, px) = read_ppm(input)?;
-    let blob = if ch == 1 {
-        codec::encode_gray(w, h, &px, q)
-    } else if sub == "444" {
-        codec::encode_rgb444(w, h, &px, q)
+    let (rgb, alpha) = if ch == 4 {
+        let mut rgb = Vec::with_capacity(w * h * 3);
+        let mut a = Vec::with_capacity(w * h);
+        for p in px.chunks_exact(4) {
+            rgb.extend_from_slice(&p[..3]);
+            a.push(p[3]);
+        }
+        (rgb, Some(a))
     } else {
-        codec::encode_rgb420(w, h, &px, q)
+        (px, None)
     };
+    let mut blob = if ch == 1 {
+        codec::encode_gray(w, h, &rgb, q)
+    } else if sub == "444" {
+        codec::encode_rgb444(w, h, &rgb, q)
+    } else {
+        codec::encode_rgb420(w, h, &rgb, q)
+    };
+    if let Some(a) = alpha {
+        let ap = alpha_png(w, h, &a)?;
+        let mut with_alpha = Vec::with_capacity(blob.len() + ap.len() + 4);
+        with_alpha.extend_from_slice(&blob[..7]);
+        with_alpha.push(1);
+        with_alpha.extend_from_slice(&blob[8..12]);
+        with_alpha.extend_from_slice(&(ap.len() as u32).to_le_bytes());
+        with_alpha.extend_from_slice(&ap);
+        with_alpha.extend_from_slice(&blob[12..]);
+        blob = with_alpha;
+    }
     fs::write(output, &blob).map_err(|e| format!("{}: {}", output, e))?;
     println!("encoded {}x{} -> {} ({} bytes)", w, h, output, blob.len());
     Ok(())
@@ -142,6 +185,44 @@ fn cmd_decode(args: &[String]) -> Result<(), String> {
     if data.len() < 12 || &data[0..4] != b"MTB1" {
         return Err("not an MTC image".into());
     }
+    let mut alpha: Option<(usize, usize, Vec<u8>)> = None;
+    let owned;
+    let data2: &[u8];
+    if data[7] & 1 != 0 {
+        if data.len() < 16 {
+            return Err("truncated alpha length".into());
+        }
+        let alen = u32::from_le_bytes([data[12], data[13], data[14], data[15]]) as usize;
+        if data.len() < 16 + alen {
+            return Err("truncated alpha payload".into());
+        }
+        let img = image::load_from_memory_with_format(&data[16..16 + alen], image::ImageFormat::Png)
+            .map_err(|e| format!("alpha: {}", e))?;
+        let g = img.to_luma8();
+        alpha = Some((g.width() as usize, g.height() as usize, g.into_raw()));
+        let mut stripped = data[..12].to_vec();
+        stripped[7] = 0;
+        stripped.extend_from_slice(&data[16 + alen..]);
+        owned = stripped;
+        data2 = &owned;
+    } else {
+        data2 = &data;
+    }
+    let data = data2.to_vec();
+    let data = data.as_slice();
+    let attach = |rgb: &[u8]| -> Vec<u8> {
+        if let Some((aw, _ah, ref a)) = alpha {
+            let mut out = Vec::with_capacity(rgb.len() / 3 * 4);
+            for (i, p) in rgb.chunks_exact(3).enumerate() {
+                out.extend_from_slice(p);
+                out.push(a.get(i).copied().unwrap_or(255));
+            }
+            let _ = aw;
+            out
+        } else {
+            rgb.to_vec()
+        }
+    };
     match data[5] {
         0 => {
             let img = codec::decode_gray(&data)?;
@@ -150,12 +231,16 @@ fn cmd_decode(args: &[String]) -> Result<(), String> {
         }
         1 => {
             let img = codec::decode_rgb444(&data)?;
-            write_ppm(output, img.width, img.height, 3, &img.pixels)?;
+            let px = attach(&img.pixels);
+            let ch = if alpha.is_some() { 4 } else { 3 };
+            write_ppm(output, img.width, img.height, ch, &px)?;
             println!("decoded {}x{} -> {}", img.width, img.height, output);
         }
         2 => {
             let img = codec::decode_rgb420(&data)?;
-            write_ppm(output, img.width, img.height, 3, &img.pixels)?;
+            let px = attach(&img.pixels);
+            let ch = if alpha.is_some() { 4 } else { 3 };
+            write_ppm(output, img.width, img.height, ch, &px)?;
             println!("decoded {}x{} -> {}", img.width, img.height, output);
         }
         mode => return Err(format!("mode {} is not implemented in Rust yet", mode)),
