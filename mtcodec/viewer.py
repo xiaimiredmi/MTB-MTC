@@ -11,6 +11,7 @@
 - 帧图按需生成 PhotoImage 并做 LRU 缓存，避免一次占几百 MB。
 """
 import io
+import math
 import os
 import shutil
 import subprocess
@@ -30,21 +31,28 @@ from .video_codec import _parse_heads, decode_video, iter_frames
 
 MAX_W = int(os.environ.get("MTCODEC_VIEWER_MAX_W", "0") or 0)
 MAX_H = int(os.environ.get("MTCODEC_VIEWER_MAX_H", "0") or 0)
-MAX_SIDE = int(os.environ.get("MTCODEC_VIEWER_MAX_SIDE", "1600") or 1600)
+# 0 keeps decoded frames at native size, which is what sharp zoom needs.
+# A positive value still caps the stored frames for very large clips.
+MAX_SIDE = int(os.environ.get("MTCODEC_VIEWER_MAX_SIDE", "0") or 0)
 DEFAULT_FPS = 24.0
 CACHE_LIMIT = 24
 
-BG = "#000000"
-FG = "#FFFFFF"
-DIM = "#9499A0"
-BAR_BG = "#000000"
-CHIP_BG = "#1B1D22"
-CHIP_HI = "#2A2D34"
-TRACK = "#2A2D34"
-ACCENT = "#FB7299"
-ACCENT_HI = "#FF8CB0"
-ACCENT_DIM = "#D15A7C"
-CANVAS_BG = "#000000"
+# Light theme: every surface is white or near-white, including the letterbox
+# around the picture. Text is a dark neutral; the single accent is a warm pink
+# that reads against white without turning the window colourless.
+BG = "#FFFFFF"
+BAR_BG = "#F7F7F8"
+CANVAS_BG = "#FFFFFF"
+FG = "#1A1A1A"
+DIM = "#6B6B6B"
+TRACK = "#E6E6E9"
+CHIP_BG = "#F1F1F3"
+CHIP_HI = "#E5E5E9"
+ACCENT = "#E8476B"
+ACCENT_HI = "#F25C7C"
+ACCENT_DARK = "#C22B4E"
+ACCENT_SOFT = "#FDECF0"
+ON_ACCENT = "#FFFFFF"
 FONT = "Microsoft YaHei"
 MONO = "Consolas"
 
@@ -74,6 +82,30 @@ def round_rect(cv, x1, y1, x2, y2, r, **kw):
     return cv.create_polygon(pts, smooth=True, **kw)
 
 
+def light_title_bar(root):
+    """Force a light Windows caption so the window has no black chrome."""
+    if sys.platform != "win32":
+        return
+    try:
+        import ctypes
+
+        root.update_idletasks()
+        hwnd = ctypes.windll.user32.GetParent(root.winfo_id())
+        if not hwnd:
+            hwnd = root.winfo_id()
+        off = ctypes.c_int(0)
+        for attr in (20, 19):
+            ctypes.windll.dwmapi.DwmSetWindowAttribute(
+                hwnd, attr, ctypes.byref(off), ctypes.sizeof(off))
+        white = ctypes.c_int(0x00FFFFFF)
+        ink = ctypes.c_int(0x001A1A1A)
+        for attr, col in ((35, white), (36, ink)):
+            ctypes.windll.dwmapi.DwmSetWindowAttribute(
+                hwnd, attr, ctypes.byref(col), ctypes.sizeof(col))
+    except Exception:
+        pass
+
+
 def sniff(blob):
     magic = blob[:4]
     if magic == IMAGE_MAGIC:
@@ -93,11 +125,15 @@ def read_container(path):
 
 
 def display_frames(frames):
-    """只在帧超过 MAX_SIDE 时做一次高质量缩放，其余保留原始分辨率。"""
-    if not frames:
-        return frames
+    """Keep decoded frames at native size unless MAX_SIDE asks for a cap.
+
+    Zoom renders from these frames, so downscaling them here would make every
+    zoomed-in view soft. MAX_SIDE=0 (the default) leaves them untouched.
+    """
+    if not frames or MAX_SIDE <= 0:
+        return list(frames)
     h0, w0 = frames[0].shape[:2]
-    cap = MAX_SIDE if MAX_SIDE > 0 else max(w0, h0)
+    cap = MAX_SIDE
     if MAX_W and MAX_H:
         cap = min(cap, max(MAX_W, MAX_H))
     scale = min(cap / float(max(w0, h0)), 1.0)
@@ -328,14 +364,14 @@ class AudioPlayer(object):
 class StreamFrames(object):
     """长片用：后台顺序解码，只留最近 window 帧，边解边放不爆内存。"""
 
-    def __init__(self, blob, total, shape, fps, audio, window=48,
+    def __init__(self, blob, total, shape, fps, audio, window=24,
                  max_side=None, ready=6):
         self.count = int(total)
         self.shape = shape
         self.fps = float(fps or DEFAULT_FPS)
         self.audio = audio
         self.window = int(window)
-        self.max_side = int(max_side or min(MAX_SIDE, 1280))
+        self.max_side = int(MAX_SIDE if max_side is None else max_side)
         self._frames = {}
         self._lock = threading.Lock()
         self.decoded = 0
@@ -438,6 +474,15 @@ class Player(object):
         self._syncing = False
         self._cache = {}
         self._order = []
+        self._mips = {}
+        self._mip_order = []
+        self._probe_idx = None
+        self._photo_ref = None
+        self.scale = 1.0
+        self.pan = [0.0, 0.0]
+        self._fit_mode = True
+        self._drag = None
+        self.volume = 100
 
         self._build_ui(title)
         self.show(0)
@@ -473,14 +518,14 @@ class Player(object):
         if playing:
             self._play_ico.append(
                 c.create_rectangle(cx - 7, cy - 7.5, cx - 2.4, cy + 7.5,
-                                   fill=FG, outline=""))
+                                   fill=ON_ACCENT, outline=""))
             self._play_ico.append(
                 c.create_rectangle(cx + 2.4, cy - 7.5, cx + 7, cy + 7.5,
-                                   fill=FG, outline=""))
+                                   fill=ON_ACCENT, outline=""))
         else:
             self._play_ico.append(
                 c.create_polygon(cx - 4.6, cy - 7.8, cx - 4.6, cy + 7.8,
-                                 cx + 7.4, cy, fill=FG, outline=""))
+                                 cx + 7.4, cy, fill=ON_ACCENT, outline=""))
 
     def _hover_pb(self, on):
         self._pb_hot = bool(on)
@@ -499,7 +544,7 @@ class Player(object):
         box = round_rect(c, 0, 0, w, h, h / 2.0, fill=CHIP_BG,
                          outline=(ACCENT if primary else ""), width=1)
         label = c.create_text(w / 2.0, h / 2.0, text=text,
-                              fill=(ACCENT if primary else DIM),
+                              fill=(ACCENT_DARK if primary else DIM),
                               font=(FONT, 9, "bold" if primary else "normal"))
         c._on = bool(primary)
         c.bind("<Button-1>", lambda e: cmd())
@@ -519,11 +564,22 @@ class Player(object):
         self._togs = []
         self._cur = 0
         self._pb_hot = False
+        self._cache = {}
+        self._order = []
+        self._mips = {}
+        self._mip_order = []
+        self._probe_idx = None
+        self._photo_ref = None
+        self.scale = 1.0
+        self.pan = [0.0, 0.0]
+        self._fit_mode = True
+        self._drag = None
+        self.volume = 100
 
         hf, wf = self._shape
         try:
             sw = min(max(880, wf + 40), 1120)
-            sh = int(round(sw * hf / float(wf))) + 150
+            sh = int(round(sw * hf / float(wf))) + 170
             sw = min(sw, self.root.winfo_screenwidth() - 80)
             sh = min(sh, self.root.winfo_screenheight() - 130)
             self.root.geometry("%dx%d" % (sw, sh))
@@ -542,15 +598,27 @@ class Player(object):
         meta = "%d×%d  ·  %d fps" % (wf, hf, int(round(self.fps)))
         tk.Label(head, text=meta, bg=BG, fg=DIM,
                  font=(FONT, 9)).pack(side="right", padx=(12, 0))
+        self.zoom_label = tk.Label(head, text="适应 100%", bg=BG, fg=DIM,
+                                   font=(MONO, 9), cursor="hand2")
+        self.zoom_label.pack(side="right", padx=(12, 0))
+        self.zoom_label.bind("<Button-1>", self.fit)
 
+        # 控制条先 pack：pack 顺序决定空间分配，画面先占就会把控件挤没。
         bar = tk.Frame(self.root, bg=BAR_BG)
         bar.pack(side="bottom", fill="x")
 
-        self.image_label = tk.Label(self.root, bg=CANVAS_BG, bd=0,
-                                    highlightthickness=0)
-        self.image_label.pack(fill="both", expand=True)
-        self.image_label.bind("<Configure>", self._on_canvas_resize)
-        self.image_label.bind("<Double-Button-1>", lambda e: self.toggle())
+        self.canvas = tk.Canvas(self.root, bg=CANVAS_BG, bd=0,
+                                highlightthickness=0, cursor="arrow")
+        self.canvas.pack(fill="both", expand=True)
+        self._img_item = self.canvas.create_image(0, 0, anchor="nw")
+        self.canvas.bind("<Configure>", self._on_canvas_resize)
+        self.canvas.bind("<Double-Button-1>", self.fit)
+        self.canvas.bind("<ButtonPress-1>", self._pan_start)
+        self.canvas.bind("<B1-Motion>", self._pan_move)
+        self.canvas.bind("<ButtonRelease-1>", self._pan_end)
+        self.canvas.bind("<MouseWheel>", self._on_wheel)
+        self.canvas.bind("<Button-4>", lambda e: self._wheel_step(1, e))
+        self.canvas.bind("<Button-5>", lambda e: self._wheel_step(-1, e))
 
         self.pb = tk.Canvas(bar, height=26, bg=BAR_BG, highlightthickness=0,
                             cursor="hand2")
@@ -579,13 +647,12 @@ class Player(object):
         self._toggle_chip(row, "循环", self.loop_var, self._on_loop,
                           52).pack(side="right", padx=(0, 6))
 
-        self.vol = tk.Scale(row, from_=0, to=100, orient="horizontal", length=78,
-                            showvalue=False, command=self._on_volume,
-                            bg=BAR_BG, fg=FG, troughcolor=TRACK,
-                            highlightthickness=0, bd=0, sliderrelief="flat",
-                            sliderlength=12, width=3, activebackground=ACCENT)
-        self.vol.set(100)
-        self.vol.pack(side="right", padx=(6, 12))
+        self.vol_cv = tk.Canvas(row, width=84, height=24, bg=BAR_BG,
+                                highlightthickness=0, cursor="hand2")
+        self.vol_cv.pack(side="right", padx=(6, 12))
+        self.vol_cv.bind("<Button-1>", self._vol_press)
+        self.vol_cv.bind("<B1-Motion>", self._vol_drag)
+        self.vol_cv.bind("<ButtonRelease-1>", self._vol_release)
 
         tk.Label(row, text="音量", bg=BAR_BG, fg=DIM,
                  font=(FONT, 9)).pack(side="right")
@@ -603,11 +670,12 @@ class Player(object):
         elif not self.track.stretched():
             note = "没有找到 ffmpeg，倍速会连音调一起变"
         if note:
-            tk.Label(bar, text=note, bg=BAR_BG, fg="#C07A2A", anchor="w",
+            tk.Label(bar, text=note, bg=BAR_BG, fg="#B26A00", anchor="w",
                      font=(FONT, 9)).pack(fill="x", padx=14, pady=(0, 8))
 
         self._paint_speeds()
         self._paint_toggles()
+        self._draw_volume()
 
         self.root.bind("<space>", self.toggle)
         self.root.bind("<Escape>", lambda e: self.close())
@@ -627,9 +695,9 @@ class Player(object):
         for speed, c, box, label in self._chips:
             on = abs(self.speed - speed) < 1e-6
             c._on = on
-            c.itemconfigure(box, fill=CHIP_BG,
+            c.itemconfigure(box, fill=(ACCENT_SOFT if on else CHIP_BG),
                             outline=(ACCENT if on else ""), width=(1 if on else 0))
-            c.itemconfigure(label, fill=(ACCENT if on else DIM))
+            c.itemconfigure(label, fill=(ACCENT_DARK if on else DIM))
 
     def _toggle_chip(self, parent, text, var, cmd, w=52):
         def _hit():
@@ -644,42 +712,211 @@ class Player(object):
         for c, box, var in self._togs:
             on = bool(var.get())
             c._on = on
-            c.itemconfigure(box, fill=CHIP_BG,
+            c.itemconfigure(box, fill=(ACCENT_SOFT if on else CHIP_BG),
                             outline=(ACCENT if on else ""), width=(1 if on else 0))
             for it in c.find_all():
                 if c.type(it) == "text":
-                    c.itemconfigure(it, fill=(ACCENT if on else DIM))
+                    c.itemconfigure(it, fill=(ACCENT_DARK if on else DIM))
 
-    # ---------- 帧 ----------
-    def _fit_size(self):
-        ax = self.image_label.winfo_width()
-        ay = self.image_label.winfo_height()
+    # ---------- 画面与缩放 ----------
+    def _viewport(self):
+        w = self.canvas.winfo_width()
+        h = self.canvas.winfo_height()
+        if w <= 8 or h <= 8:
+            return (self._shape[1], self._shape[0])
+        return (w, h)
+
+    def _fit_scale(self):
+        cw, ch = self._viewport()
         h0, w0 = self._shape
-        if ax <= 8 or ay <= 8:
-            return (w0, h0)
-        s = min(ax / float(w0), ay / float(h0))
-        return (max(1, int(round(w0 * s))), max(1, int(round(h0 * s))))
+        if w0 <= 0 or h0 <= 0:
+            return 1.0
+        return min(cw / float(w0), ch / float(h0))
 
-    def _photo(self, idx, size):
-        key = (idx, size)
+    def _clamp_pan(self):
+        cw, ch = self._viewport()
+        h0, w0 = self._shape
+        sw = w0 * self.scale
+        sh = h0 * self.scale
+        if sw <= cw:
+            self.pan[0] = (cw - sw) / 2.0
+        else:
+            self.pan[0] = min(0.0, max(cw - sw, self.pan[0]))
+        if sh <= ch:
+            self.pan[1] = (ch - sh) / 2.0
+        else:
+            self.pan[1] = min(0.0, max(ch - sh, self.pan[1]))
+
+    def fit(self, _event=None):
+        """把画面缩到窗口大小并居中。"""
+        self.scale = self._fit_scale()
+        self._fit_mode = True
+        self._clamp_pan()
+        self._render(force=True)
+        return "break"
+
+    def _zoom_at(self, cx, cy, factor):
+        """以 (cx, cy) 为锚点缩放，光标下的像素保持不动。"""
+        lo = self._fit_scale()
+        hi = max(8.0, lo)
+        old = self.scale if self.scale > 0 else lo
+        new = min(max(old * factor, lo), hi)
+        if abs(new - old) <= 1e-9:
+            return
+        sx = (cx - self.pan[0]) / old
+        sy = (cy - self.pan[1]) / old
+        self.scale = new
+        self.pan[0] = cx - sx * new
+        self.pan[1] = cy - sy * new
+        self._fit_mode = False
+        self._clamp_pan()
+        self._render(force=True)
+
+    def _on_wheel(self, event):
+        if self.count == 0:
+            return "break"
+        d = int(event.delta)
+        n = int(d / 120.0)
+        if n == 0:
+            n = 1 if d > 0 else -1
+        self._zoom_at(event.x, event.y, 1.25 ** n)
+        return "break"
+
+    def _wheel_step(self, n, event):
+        if self.count == 0:
+            return "break"
+        self._zoom_at(event.x, event.y, 1.25 ** n)
+        return "break"
+
+    def _pan_start(self, event):
+        self._drag = (event.x, event.y)
+
+    def _pan_move(self, event):
+        if self._drag is None:
+            return
+        dx = event.x - self._drag[0]
+        dy = event.y - self._drag[1]
+        self._drag = (event.x, event.y)
+        if not dx and not dy:
+            return
+        self.pan[0] += dx
+        self.pan[1] += dy
+        self._fit_mode = False
+        self._clamp_pan()
+        self._render()
+
+    def _pan_end(self, _event=None):
+        self._drag = None
+
+    def _source(self, idx):
+        if self._prov is not None:
+            return self._prov.get(idx)
+        try:
+            return self.frames[idx]
+        except Exception:
+            return None
+
+    def _trim_cache(self):
+        while len(self._order) > CACHE_LIMIT:
+            old = self._order.pop(0)
+            self._cache.pop(old, None)
+
+    def _mip(self, idx, arr):
+        """Half-size copy of a frame, built once and kept for playback.
+
+        A 1080p downscale to about 60% costs tens of milliseconds from the
+        original; resizing this half-size copy instead is roughly three times
+        cheaper and still sharp, because it is built by 2x2 area averaging.
+        """
+        got = self._mips.get(idx)
+        if got is not None:
+            return got
+        img = Image.fromarray(arr).reduce(2)
+        self._mips[idx] = img
+        self._mip_order.append(idx)
+        while len(self._mip_order) > CACHE_LIMIT:
+            old = self._mip_order.pop(0)
+            self._mips.pop(old, None)
+        return img
+
+    def _render(self, force=False):
+        """按当前缩放画出可见区域。
+
+        只裁出看得见的那一块再缩放，结果按 (帧, 目标矩形) 缓存。适应窗口
+        播放时每帧仍然只生成一张 PhotoImage，缩放状态不会被每帧重建。
+        """
+        if self._probe_idx is None:
+            return
+        cw, ch = self._viewport()
+        arr = self._source(self._probe_idx)
+        if arr is None:
+            return
+        h0, w0 = arr.shape[:2]
+        s = self.scale if self.scale > 0 else self._fit_scale()
+        self.scale = s
+        x0 = max(0, int(math.floor(-self.pan[0] / s)))
+        y0 = max(0, int(math.floor(-self.pan[1] / s)))
+        x1 = min(w0, int(math.ceil((cw - self.pan[0]) / s)))
+        y1 = min(h0, int(math.ceil((ch - self.pan[1]) / s)))
+        if x1 <= x0 or y1 <= y0:
+            return
+        tx0 = int(round(self.pan[0] + x0 * s))
+        ty0 = int(round(self.pan[1] + y0 * s))
+        tx1 = int(round(self.pan[0] + x1 * s))
+        ty1 = int(round(self.pan[1] + y1 * s))
+        tw = max(1, tx1 - tx0)
+        th = max(1, ty1 - ty0)
+        use_mip = 0.35 <= s <= 0.65 and w0 >= 64 and h0 >= 64
+        key = (self._probe_idx, x0, y0, x1, y1, tw, th, use_mip)
         ph = self._cache.get(key)
-        if ph is None:
-            if self._prov is not None:
-                arr = self._prov.get(idx)
+        if ph is None or force:
+            img = None
+            resample = Image.BOX
+            if use_mip:
+                mip = self._mip(self._probe_idx, arr)
+                mw, mh = mip.size
+                mx0 = min(mw, x0 // 2)
+                my0 = min(mh, y0 // 2)
+                mx1 = min(mw, (x1 + 1) // 2)
+                my1 = min(mh, (y1 + 1) // 2)
+                mx1 = max(mx0 + 1, mx1)
+                my1 = max(my0 + 1, my1)
+                img = mip.crop((mx0, my0, mx1, my1))
+                ratio = s / 0.5
+                resample = Image.BOX if ratio <= 1.2 else Image.BICUBIC
             else:
-                arr = self.frames[idx]
-            if arr is None:
-                return None
-            img = Image.fromarray(arr)
-            if size and img.size != size:
-                img = img.resize(size, Image.LANCZOS)
+                img = Image.fromarray(arr[y0:y1, x0:x1])
+                # BOX is an area average, so shrinking stays clean and costs
+                # about half of LANCZOS; zoomed-in frames keep their pixels.
+                resample = Image.BILINEAR if s >= 1.0 else Image.BOX
+            if img.size != (tw, th):
+                img = img.resize((tw, th), resample)
             ph = ImageTk.PhotoImage(img)
             self._cache[key] = ph
+            if key in self._order:
+                self._order.remove(key)
             self._order.append(key)
-            while len(self._order) > CACHE_LIMIT:
-                old = self._order.pop(0)
-                self._cache.pop(old, None)
-        return ph
+            self._trim_cache()
+        self._photo_ref = ph
+        self.canvas.itemconfigure(self._img_item, image=ph)
+        self.canvas.coords(self._img_item, tx0, ty0)
+        self._cur = self._probe_idx
+        pct = int(round(s * 100.0))
+        if self._fit_mode:
+            self.zoom_label.configure(text="适应 %d%%" % pct)
+        else:
+            self.zoom_label.configure(text="缩放 %d%%" % pct)
+
+    def _prefetch(self, idx):
+        """Build the next half-size copy while the current frame is on screen."""
+        if idx < 0 or idx >= self.count or idx in self._mips:
+            return
+        arr = self._source(idx)
+        if arr is not None:
+            try:
+                self._mip(idx, arr)
+            except Exception:
+                pass
 
     def show(self, idx):
         if self.count == 0:
@@ -690,16 +927,19 @@ class Player(object):
             got = self._prov.resolve(idx)
             if got is None:
                 return False
-        ph = self._photo(got, self._fit_size())
-        if ph is None:
-            return False
-        self._cur = got
-        self.image_label.configure(image=ph)
+        self._probe_idx = got
+        self._render()
         return True
 
     def _on_canvas_resize(self, _event=None):
-        if self.count:
-            self.show(self._cur)
+        if not self.count or self._probe_idx is None:
+            return
+        if self._fit_mode:
+            self.scale = self._fit_scale()
+        else:
+            self.scale = max(self.scale, self._fit_scale())
+        self._clamp_pan()
+        self._render()
 
     def _shown_time(self):
         return self.pos if not self.playing else self.elapsed()
@@ -720,7 +960,8 @@ class Player(object):
             round_rect(c, x0, mid - 1.5, x, mid + 1.5, 1.5,
                        fill=ACCENT, outline="")
         r = 7.0 if getattr(self, "_pb_hot", False) else 5.0
-        c.create_oval(x - r, mid - r, x + r, mid + r, fill=ACCENT, outline="")
+        c.create_oval(x - r, mid - r, x + r, mid + r, fill=ACCENT,
+                      outline=ON_ACCENT, width=2)
 
     def _update_bar(self, t):
         self._draw_progress(t)
@@ -755,6 +996,8 @@ class Player(object):
             self._schedule(0.05)
             return
         self._update_bar(t)
+        if self._prov is None:
+            self.root.after_idle(self._prefetch, idx + 1)
         nxt = (idx + 1) / self.fps
         delay = (nxt - t) / self.speed
         if delay < 0.001:
@@ -885,20 +1128,54 @@ class Player(object):
             self.base_wall = time.monotonic()
             self._play_audio(self.pos)
 
-    def _on_volume(self, value):
-        try:
-            self.gain = float(value) / 100.0
-        except Exception:
-            self.gain = 1.0
-        if self.playing:
+    def _draw_volume(self):
+        c = getattr(self, "vol_cv", None)
+        if c is None:
+            return
+        c.delete("all")
+        W = int(c["width"])
+        H = int(c["height"])
+        mid = H / 2.0
+        x0, x1 = 7, W - 7
+        round_rect(c, x0, mid - 1.5, x1, mid + 1.5, 1.5, fill=TRACK, outline="")
+        frac = max(0.0, min(1.0, self.volume / 100.0))
+        x = x0 + (x1 - x0) * frac
+        if frac > 0.002:
+            round_rect(c, x0, mid - 1.5, x, mid + 1.5, 1.5,
+                       fill=ACCENT, outline="")
+        r = 5.5
+        c.create_oval(x - r, mid - r, x + r, mid + r, fill=ACCENT,
+                      outline=ON_ACCENT, width=2)
+
+    def _vol_from_x(self, x):
+        W = int(self.vol_cv["width"])
+        f = (float(x) - 7.0) / max(1.0, W - 14)
+        return int(round(min(1.0, max(0.0, f)) * 100.0))
+
+    def _set_volume(self, value, restart=True):
+        self.volume = int(max(0, min(100, int(value))))
+        self.gain = self.volume / 100.0
+        self._draw_volume()
+        if restart and self.playing:
             self.pos = self.elapsed()
             self.base_pos = self.pos
             self.base_wall = time.monotonic()
             self._play_audio(self.pos)
 
+    def _vol_press(self, event):
+        self._set_volume(self._vol_from_x(event.x), restart=False)
+        return "break"
+
+    def _vol_drag(self, event):
+        self._set_volume(self._vol_from_x(event.x), restart=False)
+        return "break"
+
+    def _vol_release(self, event):
+        self._set_volume(self._vol_from_x(event.x), restart=True)
+        return "break"
+
     def volume_step(self, delta):
-        self.vol.set(max(0, min(100, int(self.vol.get()) + delta)))
-        self._on_volume(self.vol.get())
+        self._set_volume(self.volume + delta)
         return "break"
 
     def _on_loop(self):
@@ -945,6 +1222,7 @@ def open_path(path):
         return 1
 
     root = tk.Tk()
+    light_title_bar(root)
     auto = int(os.environ.get("MTCODEC_VIEWER_AUTOCLOSE_MS", "0") or 0)
 
     if kind == "image":
@@ -1001,12 +1279,12 @@ def open_path(path):
         hint = tk.Label(splash, text="正在解码…", bg=BG, fg=FG,
                         font=("Microsoft YaHei", 12))
         hint.pack(pady=(20, 8))
-        bar = tk.Canvas(splash, height=10, bg="#2B3039", highlightthickness=0)
+        bar = tk.Canvas(splash, height=10, bg=TRACK, highlightthickness=0)
         bar.pack(fill="x", padx=32)
         fill = bar.create_rectangle(0, 0, 0, 10, fill=ACCENT, width=0)
-        pct = tk.Label(splash, text="0%", bg=BG, fg="#9BA3AE")
+        pct = tk.Label(splash, text="0%", bg=BG, fg=DIM)
         pct.pack(pady=(6, 20))
-        preview = tk.Label(splash, bg=BG, bd=0, highlightthickness=0)
+        preview = tk.Label(splash, bg=CANVAS_BG, bd=0, highlightthickness=0)
         preview.pack(expand=True, pady=(0, 12))
     else:
         root.withdraw()
