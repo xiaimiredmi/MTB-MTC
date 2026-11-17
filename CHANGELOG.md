@@ -67,7 +67,7 @@ All notable changes to this project. Format based on
   457 KB at 34.22 dB.
 * Rate at matched PSNR, version 2 versus version 1: photo_a −5.3 %,
   photo_b −15.3 %, photo_c −8.5 %, render_d −15.8 %.
-* Tests: 26 unit, 2 compatibility, 9 viewer geometry.
+* Tests: 28 unit, 2 compatibility, 9 viewer geometry.
 
 ## [1.2.2] — 2026-11-15
 
@@ -297,7 +297,7 @@ All notable changes to this project. Format based on
   解码 130 ms（单核，release）。同 `-q` 的版本 1：457 KB、34.22 dB。
 * 同 PSNR 下版本 2 相对版本 1：photo_a −5.3%、photo_b −15.3%、photo_c −8.5%、
   render_d −15.8%。
-* 测试：26 个单元、2 个兼容性、9 个查看器几何。
+* 测试：28 个单元、2 个兼容性、9 个查看器几何。
 
 ## [1.2.1] — 2026-11-15
 

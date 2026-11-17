@@ -118,7 +118,7 @@ the window and prints `viewer ok`, `MTCODEC_VIEWER_ZOOM` opens at a fixed zoom.
 ## Tests
 
 ```powershell
-cargo test                                  # 26 unit + 2 compatibility tests
+cargo test                                  # 28 unit + 2 compatibility tests
 cargo test --release --features viewer      # + 9 viewer geometry tests
 ```
 
