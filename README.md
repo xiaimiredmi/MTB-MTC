@@ -1,9 +1,9 @@
 # MTC — a self-built image codec
 
-MTC is a from-scratch still-image codec. No JPEG, WebP, PNG or HEIC library is
-linked in: the transform, quantiser, arithmetic coder, colour conversion and the
-container are ours. PNG/JPEG/WebP/BMP are only used to read and write ordinary
-image files.
+MTC is a from-scratch still-image codec. Its pixels never go through JPEG, WebP
+or PNG: the transform, quantiser, adaptive quantisation, arithmetic coder,
+colour conversion and the container are all its own. The `image` crate is used
+only to read and write ordinary image files.
 
 One format, one extension: **`.mtc`**. Lossy and lossless share the container,
 with optional alpha and 4:2:0 / 4:4:4 chroma.
@@ -81,7 +81,10 @@ rust/src/arith.rs      binary arithmetic coder
 rust/src/transform.rs  DCT matrix, zig-zag scan, quantiser table
 rust/src/bin/          mtbench (measurements) and mtview (egui viewer)
 deploy/register.ps1    file association and PATH, per user
-samples/               .mtc files, including ones the old Python encoder wrote
+deploy/mtc.ico         icon the association uses
+samples/               three .mtc files the removed encoder wrote: two photographs
+                       and a 960x540 picture with an alpha channel, plus that
+                       picture's source PNG
 ```
 
 Version 1 streams — the layout the removed Python encoder wrote — still decode

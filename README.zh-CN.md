@@ -1,7 +1,7 @@
 # MTC —— 自己写的图片编解码器
 
-MTC 是从零实现的静态图片编解码器。不链接 JPEG、WebP、PNG、HEIC 的库：变换、
-量化、算术编码、颜色空间、容器格式全部是自己的。PNG/JPEG/WebP/BMP 只用来
+MTC 是从零实现的静态图片编解码器。像素从不经过 JPEG、WebP、PNG：变换、量化、
+自适应量化、算术编码、颜色空间与容器格式全部是自己的。`image` 这个库只用来
 读写普通图片文件。
 
 一个格式，一个后缀：**`.mtc`**。有损与无损共用一个容器，可选 alpha 与
@@ -77,7 +77,9 @@ rust/src/arith.rs      二元算术编码器
 rust/src/transform.rs  DCT 矩阵、zig-zag 扫描、量化表
 rust/src/bin/          mtbench（测量）与 mtview（egui 查看器）
 deploy/register.ps1    按用户写文件关联与 PATH
-samples/               .mtc 样本，包括被删掉的 Python 编码器写的那些
+deploy/mtc.ico         关联用的图标
+samples/               三个被删掉的编码器写的 .mtc：两张实拍、一张带 alpha 的
+                       960×540，外加那张图的源 PNG
 ```
 
 版本 1 码流（被移除的 Python 编码器写的布局）仍然逐位正确解码，
