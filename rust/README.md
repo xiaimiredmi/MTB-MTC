@@ -13,6 +13,19 @@ cargo build --release --features viewer    # + mtview, the egui viewer
 
 The binaries are `target/release/mtcodec.exe`, `mtbench.exe` and `mtview.exe`.
 
+## Install on PATH
+
+`D:\MTB-MTC\bin` is on the user `Path` and sits ahead of the Python entry
+points, so the bare names resolve to these builds:
+
+```powershell
+copy target\release\mtcodec.exe,target\release\mtbench.exe,target\release\mtview.exe ..\bin\
+mtcodec info photo.mtc        # the Rust one, not D:\Python\Scripts\mtcodec.exe
+```
+
+`python -m mtcodec ...` still runs the Python package, because that path never
+looks at `Path`.
+
 ## Commands
 
 ```powershell
