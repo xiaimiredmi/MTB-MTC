@@ -1,5 +1,13 @@
 # MTC — a self-built image codec
 
+> Self-built image codec in Rust: 8×8 DCT, arithmetic coding, adaptive
+> quantisation, lossless and exact alpha, plus an egui viewer.
+> 自研 Rust 图片编解码器：8×8 DCT + 算术编码 + 自适应量化，支持无损与精确 alpha，
+> 自带 egui 查看器。
+
+That line is the repository's description on GitHub. If you change it in one
+place, change it in the other.
+
 MTC is a from-scratch still-image codec. Its pixels never go through JPEG, WebP
 or PNG: the transform, quantiser, adaptive quantisation, arithmetic coder,
 colour conversion and the container are all its own. The `image` crate is used

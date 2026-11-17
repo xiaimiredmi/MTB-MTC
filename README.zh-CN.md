@@ -1,5 +1,12 @@
 # MTC —— 自己写的图片编解码器
 
+> 自研 Rust 图片编解码器：8×8 DCT + 算术编码 + 自适应量化，支持无损与精确 alpha，
+> 自带 egui 查看器。
+> Self-built image codec in Rust: 8×8 DCT, arithmetic coding, adaptive
+> quantisation, lossless and exact alpha, plus an egui viewer.
+
+这段就是 GitHub 上的仓库简介，两边改一处就要改另一处。
+
 MTC 是从零实现的静态图片编解码器。像素从不经过 JPEG、WebP、PNG：变换、量化、
 自适应量化、算术编码、颜色空间与容器格式全部是自己的。`image` 这个库只用来
 读写普通图片文件。
