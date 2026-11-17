@@ -152,8 +152,34 @@ struct Shot {
     title: String,
 }
 
-fn fmt_bytes(n: usize) -> String {
-    if n >= 1024 * 1024 {
+/// egui ships no CJK glyphs, so a Chinese file name renders as empty boxes.
+/// Borrow one of the system fonts and keep it as the fallback face.
+fn install_cjk_font(ctx: &egui::Context) {
+    const CANDIDATES: [&str; 4] = [
+        r"C:\Windows\Fonts\msyh.ttc",
+        r"C:\Windows\Fonts\Deng.ttf",
+        r"C:\Windows\Fonts\simhei.ttf",
+        r"C:\Windows\Fonts\simsun.ttc",
+    ];
+    let bytes = match CANDIDATES.iter().find_map(|p| std::fs::read(p).ok()) {
+        Some(b) => b,
+        None => return,
+    };
+    let mut fonts = egui::FontDefinitions::default();
+    fonts
+        .font_data
+        .insert("system-cjk".to_owned(), egui::FontData::from_owned(bytes));
+    for family in [egui::FontFamily::Proportional, egui::FontFamily::Monospace] {
+        fonts
+            .families
+            .entry(family)
+            .or_default()
+            .push("system-cjk".to_owned());
+    }
+    ctx.set_fonts(fonts);
+}
+
+fn fmt_bytes(n: usize) -> String {    if n >= 1024 * 1024 {
         format!("{:.2} MB", n as f64 / (1024.0 * 1024.0))
     } else if n >= 1024 {
         format!("{:.1} KB", n as f64 / 1024.0)
@@ -229,6 +255,7 @@ struct MtView {
 impl MtView {
     fn new(cc: &eframe::CreationContext<'_>, shot: Shot) -> MtView {
         cc.egui_ctx.set_visuals(egui::Visuals::light());
+        install_cjk_font(&cc.egui_ctx);
         let env_u64 = |name: &str| -> Option<u64> {
             std::env::var(name).ok().and_then(|v| v.parse::<u64>().ok())
         };

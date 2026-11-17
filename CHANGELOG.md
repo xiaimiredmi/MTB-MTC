@@ -43,6 +43,10 @@ All notable changes to this project. Format based on
 
 ### Fixed
 
+* **Chinese file names rendered as boxes in the viewer.** egui ships no CJK
+  glyphs, so `图片信息_lossless.mtc` in the header came out as empty boxes. The
+  viewer now borrows a system font (YaHei, DengXian, SimHei or SimSun, whichever
+  is installed) as the fallback face.
 * **Double-clicking a `.mtc` opened the old viewer.** The `.mtc` class pointed
   at `pythonw.exe deploy\mtb_launcher.py`, which no longer existed; it now
   points at `bin\mtview.exe`. Verified through the shell association, not just by
@@ -329,6 +333,9 @@ All notable changes to this project. Format based on
 
 ### 修复
 
+* **查看器里中文文件名显示成方块。** egui 自带字体没有中日韩字形，
+  `图片信息_lossless.mtc` 在标题栏里是一排空框。现在会借用系统字体
+  （雅黑、等线、黑体、宋体，谁在就用谁）作为回退字形。
 * **双击 `.mtc` 打开的还是旧查看器。** `.mtc` 的类指向已经不存在的
   `pythonw.exe deploy\mtb_launcher.py`，现在指向 `bin\mtview.exe`。是用 shell
   关联真实启动验证过的，不只是读注册表。

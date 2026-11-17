@@ -129,7 +129,9 @@ and version in the header bar; other image files open too, which makes it
 usable for eyeballing a decode against its source.
 
 Above 1:1 the texture switches to nearest-neighbour, so block edges and ringing
-are visible as they are, not blurred by interpolation.
+are visible as they are, not blurred by interpolation. egui ships no CJK glyphs,
+so the viewer loads a system font (YaHei, DengXian, SimHei or SimSun) as the
+fallback face; without it a Chinese file name is a row of empty boxes.
 
 Environment variables for scripted checks: `MTCODEC_VIEWER_AUTOCLOSE_MS` closes
 the window and prints `viewer ok`, `MTCODEC_VIEWER_ZOOM` opens at a fixed zoom.
