@@ -1,7 +1,12 @@
 package dev.mtc;
 
 import android.app.Activity;
+import android.content.ContentValues;
 import android.graphics.Bitmap;
+import android.net.Uri;
+import android.os.Build;
+import android.os.Environment;
+import android.provider.MediaStore;
 import android.net.Uri;
 import android.os.Bundle;
 import android.os.Handler;
@@ -150,11 +155,12 @@ public class ViewerActivity extends Activity {
     }
 
     /**
-     * Write the picture out as a PNG next to the .mtc files.
+     * Write the picture out as a PNG.
      *
-     * <p>Without this the photos are trapped: only this app reads .mtc. The PNG
-     * lands in the same folder, which is visible over USB, and the path is
-     * reported so it can be found.
+     * <p>Without this the photos are trapped: only this app reads .mtc. On
+     * Android 10 and later the PNG goes into the system gallery under
+     * `Pictures/MTC`, so other apps can see it; on older versions it lands next to
+     * the .mtc files, which is visible over USB.
      */
     private void exportPng() {
         Bitmap bmp = zoom.getBitmap();
@@ -168,28 +174,58 @@ public class ViewerActivity extends Activity {
         new Thread(new Runnable() {
             @Override
             public void run() {
-                File out = new File(Store.dir(ViewerActivity.this),
-                        name.replaceAll("\\.mtc$", "") + ".png");
-                boolean ok = false;
-                try {
-                    FileOutputStream fos = new FileOutputStream(out);
+                String base = name.replaceAll("\\.mtc$", "");
+                String where = null;
+                // Preferred: hand it to the system gallery.
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                     try {
-                        ok = copy.compress(Bitmap.CompressFormat.PNG, 100, fos);
-                    } finally {
-                        fos.close();
+                        ContentValues values = new ContentValues();
+                        values.put(MediaStore.Images.Media.DISPLAY_NAME, base + ".png");
+                        values.put(MediaStore.Images.Media.MIME_TYPE, "image/png");
+                        values.put(MediaStore.Images.Media.RELATIVE_PATH,
+                                Environment.DIRECTORY_PICTURES + "/MTC");
+                        Uri target = getContentResolver().insert(
+                                MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values);
+                        if (target != null) {
+                            java.io.OutputStream os =
+                                    getContentResolver().openOutputStream(target);
+                            try {
+                                if (os != null && copy.compress(Bitmap.CompressFormat.PNG, 100, os)) {
+                                    where = "相册 Pictures/MTC/" + base + ".png";
+                                }
+                            } finally {
+                                if (os != null) {
+                                    os.close();
+                                }
+                            }
+                        }
+                    } catch (Exception e) {
+                        where = null;
                     }
-                } catch (Exception e) {
-                    ok = false;
                 }
-                final boolean written = ok;
+                // Fallback (and the only path before Android 10): app folder.
+                if (where == null) {
+                    File out = new File(Store.dir(ViewerActivity.this), base + ".png");
+                    try {
+                        FileOutputStream fos = new FileOutputStream(out);
+                        try {
+                            if (copy.compress(Bitmap.CompressFormat.PNG, 100, fos)) {
+                                where = out.getAbsolutePath();
+                            }
+                        } finally {
+                            fos.close();
+                        }
+                    } catch (Exception e) {
+                        where = null;
+                    }
+                }
+                final String landed = where;
                 ui.post(new Runnable() {
                     @Override
                     public void run() {
-                        status.setText(written
-                                ? "已导出 " + out.getAbsolutePath()
-                                : "导出失败");
+                        status.setText(landed == null ? "导出失败" : "已导出 " + landed);
                         Toast.makeText(ViewerActivity.this,
-                                written ? "已导出 PNG" : "导出失败",
+                                landed == null ? "导出失败" : "已导出 PNG",
                                 Toast.LENGTH_SHORT).show();
                     }
                 });

@@ -11,6 +11,10 @@ import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
 import android.app.AlertDialog;
+import android.content.Intent;
+import android.database.Cursor;
+import android.net.Uri;
+import android.provider.OpenableColumns;
 import android.widget.BaseAdapter;
 import android.widget.Button;
 import android.widget.FrameLayout;
@@ -21,6 +25,7 @@ import android.widget.TextView;
 import android.widget.Toast;
 
 import java.io.File;
+import java.io.InputStream;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
@@ -37,6 +42,7 @@ import java.util.concurrent.Executors;
  * {@link LruCache} sized to an eighth of the heap.
  */
 public class GalleryActivity extends Activity {
+    private static final int REQ_IMPORT = 7;
     private final ExecutorService pool = Executors.newFixedThreadPool(3);
     private final Handler ui = new Handler(Looper.getMainLooper());
     private final List<File> files = new ArrayList<>();
@@ -134,11 +140,90 @@ public class GalleryActivity extends Activity {
                 startActivity(new Intent(GalleryActivity.this, CameraActivity.class));
             }
         });
+
+        TextView importBtn = new TextView(this);
+        importBtn.setText("导入");
+        importBtn.setTextColor(0xFFB9B9C0);
+        importBtn.setTextSize(13);
+        importBtn.setPadding(dp(16), dp(10), dp(16), dp(10));
+        bar.addView(importBtn, new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT,
+                Gravity.CENTER_VERTICAL | Gravity.END));
+        importBtn.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                Intent pick = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+                pick.addCategory(Intent.CATEGORY_OPENABLE);
+                pick.setType("*/*");
+                try {
+                    startActivityForResult(pick, REQ_IMPORT);
+                } catch (Exception e) {
+                    Toast.makeText(GalleryActivity.this, "没有可用的文件选择器",
+                            Toast.LENGTH_SHORT).show();
+                }
+            }
+        });
         root.addView(bar, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
 
         setContentView(root);
         Mtc.warmUp();
+    }
+
+    /**
+     * Copy a picked file into the app's own folder and show it.
+     *
+     * <p>This is how a `.mtc` taken elsewhere - or pulled off a computer - gets
+     * into the gallery without asking for storage permission: the system picker
+     * grants access to exactly one file.
+     */
+    @Override
+    protected void onActivityResult(int request, int result, Intent data) {
+        super.onActivityResult(request, result, data);
+        if (request != REQ_IMPORT || result != RESULT_OK || data == null || data.getData() == null) {
+            return;
+        }
+        Uri uri = data.getData();
+        String name = "IMPORT_" + System.currentTimeMillis() + ".mtc";
+        Cursor cursor = null;
+        try {
+            cursor = getContentResolver().query(uri,
+                    new String[]{OpenableColumns.DISPLAY_NAME}, null, null, null);
+            if (cursor != null && cursor.moveToFirst()) {
+                String shown = cursor.getString(0);
+                if (shown != null && shown.length() > 0) {
+                    name = shown;
+                }
+            }
+        } catch (Exception ignored) {
+            // keep the generated name
+        } finally {
+            if (cursor != null) {
+                cursor.close();
+            }
+        }
+        if (!name.toLowerCase(Locale.ROOT).endsWith(".mtc")) {
+            name = name + ".mtc";
+        }
+        try {
+            InputStream in = getContentResolver().openInputStream(uri);
+            java.io.FileOutputStream out =
+                    new java.io.FileOutputStream(new File(Store.dir(this), name));
+            byte[] buf = new byte[64 * 1024];
+            int n;
+            try {
+                while ((n = in.read(buf)) > 0) {
+                    out.write(buf, 0, n);
+                }
+            } finally {
+                out.close();
+                in.close();
+            }
+            Toast.makeText(this, "已导入 " + name, Toast.LENGTH_SHORT).show();
+            reload();
+        } catch (Exception e) {
+            Toast.makeText(this, "导入失败：" + e.getMessage(), Toast.LENGTH_LONG).show();
+        }
     }
 
     @Override

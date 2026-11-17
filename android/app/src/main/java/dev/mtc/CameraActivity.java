@@ -70,6 +70,8 @@ public class CameraActivity extends Activity {
     /** BT.601 range of the frames this device hands out. Devices disagree, so
      *  the camera screen has a switch and the choice is remembered. */
     private boolean fullRange;
+    /** Which way the camera points; a front camera also mirrors its picture. */
+    private boolean front;
 
     @Override
     protected void onCreate(Bundle state) {
@@ -125,6 +127,25 @@ public class CameraActivity extends Activity {
         });
 
         setContentView(root);
+
+        TextView swap = new TextView(this);
+        swap.setText("⇄");
+        swap.setTextColor(0xFFEDEDF0);
+        swap.setTextSize(20);
+        swap.setGravity(Gravity.CENTER);
+        swap.setBackgroundColor(0x33FFFFFF);
+        FrameLayout.LayoutParams slp = new FrameLayout.LayoutParams(dp(52), dp(52),
+                Gravity.BOTTOM | Gravity.END);
+        slp.setMargins(0, 0, dp(20), dp(46));
+        root.addView(swap, slp);
+        swap.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                front = !front;
+                closeCamera();
+                openCamera();
+            }
+        });
 
         rangeToggle = new TextView(this);
         rangeToggle.setTextColor(0xFFEDEDF0);
@@ -194,7 +215,7 @@ public class CameraActivity extends Activity {
         }
         CameraManager manager = (CameraManager) getSystemService(Context.CAMERA_SERVICE);
         try {
-            cameraId = pickBackCamera(manager);
+            cameraId = pickCamera(manager, front);
             if (cameraId == null) {
                 Toast.makeText(this, "找不到相机", Toast.LENGTH_LONG).show();
                 return;
@@ -246,14 +267,19 @@ public class CameraActivity extends Activity {
         }
     }
 
-    private String pickBackCamera(CameraManager manager) throws CameraAccessException {
+    /** The camera pointing the requested way, or whatever exists. */
+    private String pickCamera(CameraManager manager, boolean wantFront)
+            throws CameraAccessException {
+        int wanted = wantFront
+                ? CameraCharacteristics.LENS_FACING_FRONT
+                : CameraCharacteristics.LENS_FACING_BACK;
         String fallback = null;
         String[] ids = manager.getCameraIdList();
         for (int i = 0; i < ids.length; i++) {
             String id = ids[i];
             CameraCharacteristics chars = manager.getCameraCharacteristics(id);
             Integer facing = chars.get(CameraCharacteristics.LENS_FACING);
-            if (facing != null && facing.intValue() == CameraCharacteristics.LENS_FACING_BACK) {
+            if (facing != null && facing.intValue() == wanted) {
                 return id;
             }
             if (fallback == null) {
@@ -302,7 +328,11 @@ public class CameraActivity extends Activity {
                 display = 0;
                 break;
         }
-        // The sensor is mounted at an angle; the display adds to it.
+        // The sensor is mounted at an angle; the display adds on the back camera
+        // and subtracts on the front one, which then needs mirroring too.
+        if (front) {
+            return (sensorOrientation + display) % 360;
+        }
         return ((sensorOrientation - display) + 360) % 360;
     }
 
@@ -449,7 +479,7 @@ public class CameraActivity extends Activity {
             int uvStride = planes[1].getRowStride();
             int uvPixel = planes[1].getPixelStride();
             blob = Mtc.encodeYuv(y, u, v, w, h, yStride, uvStride, uvPixel,
-                    quality, fullRange, stillRotation());
+                    quality, fullRange, stillRotation(), front);
         } catch (RuntimeException e) {
             blob = null;
         } finally {

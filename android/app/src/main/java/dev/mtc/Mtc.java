@@ -35,11 +35,13 @@ public final class Mtc {
      * @param fullRange true for BT.601 full range, false for limited (16..235),
      *                  which devices disagree about; the camera screen exposes it
      * @param rotation  clockwise quarter turn in degrees, 0/90/180/270
+     * @param mirror    flip horizontally, which is what a front camera needs
      */
     public static native byte[] encodeYuv(byte[] y, byte[] u, byte[] v,
                                           int width, int height,
                                           int yRowStride, int uvRowStride, int uvPixelStride,
-                                          int quality, boolean fullRange, int rotation);
+                                          int quality, boolean fullRange, int rotation,
+                                          boolean mirror);
 
     public static native byte[] decodeRgba(byte[] mtc, int maxSide);
 

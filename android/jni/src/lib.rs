@@ -72,9 +72,10 @@ pub extern "system" fn Java_dev_mtc_Mtc_encodeRgba(
 }
 
 /// `encodeYuv(y, u, v, width, height, yRowStride, uvRowStride, uvPixelStride,
-///            quality, fullRange, rotation) -> byte[] | null`
+///            quality, fullRange, rotation, mirror) -> byte[] | null`
 ///
-/// `rotation` is a clockwise quarter turn in degrees, 0/90/180/270.
+/// `rotation` is a clockwise quarter turn in degrees, 0/90/180/270; `mirror`
+/// flips the result horizontally, which is what a front camera needs.
 #[no_mangle]
 #[allow(clippy::too_many_arguments)]
 pub extern "system" fn Java_dev_mtc_Mtc_encodeYuv(
@@ -91,6 +92,7 @@ pub extern "system" fn Java_dev_mtc_Mtc_encodeYuv(
     quality: jint,
     full_range: jboolean,
     rotation: jint,
+    mirror: jboolean,
 ) -> jbyteArray {
     let (py, pu, pv) = match (
         take_bytes(&mut env, y),
@@ -122,6 +124,7 @@ pub extern "system" fn Java_dev_mtc_Mtc_encodeYuv(
         uv_pixel,
         full_range != JNI_FALSE as jboolean,
         rotation.max(0) as u32,
+        mirror != JNI_FALSE as jboolean,
     );
     match encode_rgba_bytes(rgba, ow, oh, quality) {
         Some(blob) => give_bytes(&mut env, &blob),
@@ -242,6 +245,7 @@ pub fn yuv_to_rgba(
     uv_pixel: usize,
     full_range: bool,
     rotation: u32,
+    mirror: bool,
 ) -> (Vec<u8>, usize, usize) {
     let quarter = (rotation / 90) % 4;
     let (ow, oh) = if quarter % 2 == 0 { (w, h) } else { (h, w) };
@@ -265,6 +269,9 @@ pub fn yuv_to_rgba(
                 3 => (w - 1 - col, row),
                 _ => (row, col),
             };
+            // A front camera shows a mirror image; flip after the turn so the
+            // mirroring is relative to the upright picture.
+            let dc = if mirror { ow - 1 - dc } else { dc };
             let o = (dr * ow + dc) * 4;
             out[o] = r.clamp(0, 255) as u8;
             out[o + 1] = g.clamp(0, 255) as u8;
@@ -299,7 +306,7 @@ mod tests {
     #[test]
     fn neutral_chroma_is_grey() {
         let (y, u, v) = grey_frame(8, 8, 180);
-        let (rgba, _, _) = yuv_to_rgba(&y, &u, &v, 8, 8, 8, 4, 1, true, 0);
+        let (rgba, _, _) = yuv_to_rgba(&y, &u, &v, 8, 8, 8, 4, 1, true, 0, false);
         assert_eq!(&rgba[0..4], &[180, 180, 180, 255]);
         assert_eq!(&rgba[4..8], &[180, 180, 180, 255]);
     }
@@ -307,15 +314,15 @@ mod tests {
     #[test]
     fn limited_range_is_expanded() {
         let (y, u, v) = grey_frame(4, 4, 16);
-        let (black, _, _) = yuv_to_rgba(&y, &u, &v, 4, 4, 4, 2, 1, false, 0);
+        let (black, _, _) = yuv_to_rgba(&y, &u, &v, 4, 4, 4, 2, 1, false, 0, false);
         assert_eq!(black[0], 0);
         let (y, u, v) = grey_frame(4, 4, 235);
-        let (white, _, _) = yuv_to_rgba(&y, &u, &v, 4, 4, 4, 2, 1, false, 0);
+        let (white, _, _) = yuv_to_rgba(&y, &u, &v, 4, 4, 4, 2, 1, false, 0, false);
         assert_eq!(white[0], 255);
         // The same luma reads brighter through limited range than through full.
         let (y, u, v) = grey_frame(4, 4, 180);
-        let (lim, _, _) = yuv_to_rgba(&y, &u, &v, 4, 4, 4, 2, 1, false, 0);
-        let (full, _, _) = yuv_to_rgba(&y, &u, &v, 4, 4, 4, 2, 1, true, 0);
+        let (lim, _, _) = yuv_to_rgba(&y, &u, &v, 4, 4, 4, 2, 1, false, 0, false);
+        let (full, _, _) = yuv_to_rgba(&y, &u, &v, 4, 4, 4, 2, 1, true, 0, false);
         assert!(lim[0] > full[0], "{} vs {}", lim[0], full[0]);
     }
 
@@ -326,7 +333,7 @@ mod tests {
         let y = vec![41u8; w * h];
         let u = vec![240u8; (w / 2) * (h / 2)];
         let v = vec![110u8; (w / 2) * (h / 2)];
-        let (rgba, _, _) = yuv_to_rgba(&y, &u, &v, w, h, w, w / 2, 1, true, 0);
+        let (rgba, _, _) = yuv_to_rgba(&y, &u, &v, w, h, w, w / 2, 1, true, 0, false);
         let (r, g, b) = (rgba[0] as i32, rgba[1] as i32, rgba[2] as i32);
         assert!(b > 200, "blue {} {} {}", r, g, b);
         assert!(r < 60, "red {} {} {}", r, g, b);
@@ -339,7 +346,7 @@ mod tests {
         let y = vec![10u8, 20, 99, 30, 40, 99];
         let u = vec![128u8, 128];
         let v = vec![128u8, 128];
-        let (rgba, _, _) = yuv_to_rgba(&y, &u, &v, 2, 2, 3, 1, 1, true, 0);
+        let (rgba, _, _) = yuv_to_rgba(&y, &u, &v, 2, 2, 3, 1, 1, true, 0, false);
         assert_eq!(rgba[0], 10);
         assert_eq!(rgba[4], 20);
         assert_eq!(rgba[8], 30);
@@ -354,7 +361,7 @@ mod tests {
         let u = vec![128u8; (w / 2) * (h / 2)];
         let v = vec![128u8; (w / 2) * (h / 2)];
         let go = |rotation: u32| {
-            let (rgba, ow, oh) = yuv_to_rgba(&y, &u, &v, w, h, w, w / 2, 1, true, rotation);
+            let (rgba, ow, oh) = yuv_to_rgba(&y, &u, &v, w, h, w, w / 2, 1, true, rotation, false);
             (move |row: usize, col: usize| rgba[(row * ow + col) * 4], ow, oh)
         };
 
@@ -384,6 +391,28 @@ mod tests {
     }
 
     #[test]
+    fn mirror_flips_horizontally_after_the_turn() {
+        let (w, h) = (3usize, 2usize);
+        let y = vec![10u8, 20, 30, 40, 50, 60];
+        let u = vec![128u8; (w / 2) * (h / 2)];
+        let v = vec![128u8; (w / 2) * (h / 2)];
+        // No turn, mirrored: the row is reversed.
+        let (rgba, ow, _) = yuv_to_rgba(&y, &u, &v, w, h, w, w / 2, 1, true, 0, true);
+        assert_eq!(rgba[0], 30);
+        assert_eq!(rgba[(ow - 1) * 4], 10);
+        // Turned then mirrored:
+        //   old            turn          turn + mirror
+        //   10 20 30       40 10         10 40
+        //   40 50 60       50 20         20 50
+        //                  60 30         30 60
+        let (rgba, ow, oh) = yuv_to_rgba(&y, &u, &v, w, h, w, w / 2, 1, true, 90, true);
+        assert_eq!((ow, oh), (2, 3));
+        assert_eq!(rgba[0], 10);
+        assert_eq!(rgba[(ow - 1) * 4], 40);
+        assert_eq!(rgba[((oh - 1) * ow) * 4], 30);
+    }
+
+    #[test]
     fn pack_puts_the_size_first() {
         let rgba = vec![1u8; 3 * 2 * 4];
         let packed = pack(3, 2, &rgba);
@@ -405,7 +434,7 @@ mod tests {
         }
         let u = vec![110u8; (w / 2) * (h / 2)];
         let v = vec![140u8; (w / 2) * (h / 2)];
-        let (rgba, ow, oh) = yuv_to_rgba(&y, &u, &v, w, h, w, w / 2, 1, true, 90);
+        let (rgba, ow, oh) = yuv_to_rgba(&y, &u, &v, w, h, w, w / 2, 1, true, 90, false);
         assert_eq!((ow, oh), (48, 64));
 
         let img = mtc::container::Image::new(ow, oh, 4, rgba).unwrap();

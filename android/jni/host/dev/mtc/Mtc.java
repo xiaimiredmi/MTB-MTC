@@ -22,7 +22,8 @@ public final class Mtc {
     public static native byte[] encodeYuv(byte[] y, byte[] u, byte[] v,
                                           int width, int height,
                                           int yRowStride, int uvRowStride, int uvPixelStride,
-                                          int quality, boolean fullRange, int rotation);
+                                          int quality, boolean fullRange, int rotation,
+                                          boolean mirror);
 
     public static native byte[] decodeRgba(byte[] mtc, int maxSide);
 

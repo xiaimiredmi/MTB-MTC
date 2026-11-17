@@ -22,6 +22,7 @@ public final class Smoke {
         checkCameraFrame();
         checkColour();
         checkRotation();
+        checkFrontCamera();
         checkThumbnail();
         checkRgba();
 
@@ -74,7 +75,7 @@ public final class Smoke {
         byte[] v = new byte[(w / 2) * (h / 2)];
         java.util.Arrays.fill(u, (byte) 128);
         java.util.Arrays.fill(v, (byte) 128);
-        byte[] mtc = Mtc.encodeYuv(y, u, v, w, h, w, w / 2, 1, 90, true, 0);
+        byte[] mtc = Mtc.encodeYuv(y, u, v, w, h, w, w / 2, 1, 90, true, 0, false);
         expect(mtc != null, "grey encode returned null");
         if (mtc == null) {
             return;
@@ -89,7 +90,7 @@ public final class Smoke {
     }
 
     private static void checkRotation() {
-        byte[] mtc = Mtc.encodeYuv(luma(), chroma(), chroma(), 64, 48, 64, 32, 1, 90, true, 90);
+        byte[] mtc = Mtc.encodeYuv(luma(), chroma(), chroma(), 64, 48, 64, 32, 1, 90, true, 90, false);
         expect(mtc != null, "rotated encode returned null");
         if (mtc == null) {
             return;
@@ -138,10 +139,37 @@ public final class Smoke {
         System.out.println("  rgba red -> " + r + "," + g + "," + b + " (" + mtc.length + " bytes)");
     }
 
+    /**
+     * A front camera shows a mirror image: the left-to-right ramp has to come back
+     * reversed, and the size must not change when there is no turn.
+     */
+    private static void checkFrontCamera() {
+        byte[] plain = Mtc.encodeYuv(luma(), chroma(), chroma(), 64, 48, 64, 32, 1, 90, true, 0, false);
+        byte[] flipped = Mtc.encodeYuv(luma(), chroma(), chroma(), 64, 48, 64, 32, 1, 90, true, 0, true);
+        expect(flipped != null, "mirrored encode returned null");
+        if (plain == null || flipped == null) {
+            return;
+        }
+        byte[] a = Mtc.decodeRgba(plain, 0);
+        byte[] b = Mtc.decodeRgba(flipped, 0);
+        int w = intAt(b, 0);
+        int h = intAt(b, 4);
+        expect(w == 64 && h == 48, "mirror changed the size: " + w + "x" + h);
+        int aLeft = a[8] & 0xff;
+        int aRight = a[8 + (w - 1) * 4] & 0xff;
+        int bLeft = b[8] & 0xff;
+        int bRight = b[8 + (w - 1) * 4] & 0xff;
+        expect(aRight > aLeft + 20, "ramp is not left to right: " + aLeft + " -> " + aRight);
+        expect(bLeft > bRight + 20, "mirror lost: " + bLeft + " -> " + bRight);
+        expect(Math.abs(bLeft - aRight) <= 4 && Math.abs(bRight - aLeft) <= 4,
+                "mirrored ends do not match: " + bLeft + "," + bRight);
+        System.out.println("  mirror: " + aLeft + "->" + aRight + " became " + bLeft + "->" + bRight);
+    }
+
     // --- a synthetic camera frame: a horizontal luma ramp, neutral chroma ----
 
     private static byte[] encodeFrame(boolean fullRange) {
-        byte[] mtc = Mtc.encodeYuv(luma(), chroma(), chroma(), 64, 48, 64, 32, 1, 88, fullRange, 0);
+        byte[] mtc = Mtc.encodeYuv(luma(), chroma(), chroma(), 64, 48, 64, 32, 1, 88, fullRange, 0, false);
         expect(mtc != null, "encodeYuv returned null");
         return mtc == null ? new byte[0] : mtc;
     }

@@ -30,11 +30,13 @@ Two environment details it works around, both worth knowing if it breaks:
 | screen | what it does |
 | --- | --- |
 | `GalleryActivity` | the launcher: a grid of `.mtc` files, thumbnails decoded at cell size by the codec, count and total size, one button to the camera |
-| `CameraActivity` | Camera2 preview, one still per shutter, `YUV_420_888` → `.mtc` in Rust, saved with the milliseconds it took |
+| `CameraActivity` | Camera2 preview, one still per shutter, `YUV_420_888` → `.mtc` in Rust, saved with the milliseconds it took; front/back switch, colour-range switch |
 | `ViewerActivity` | one picture full screen, pinch to zoom, double-tap, **export to PNG** (so a photo can leave the app); also handles `VIEW` intents for `image/x-mtc` |
 
-Long-press a thumbnail in the grid to delete it. The camera header carries a
-colour-range switch (see below).
+Long-press a thumbnail in the grid to delete it, and use `导入` to bring in a
+`.mtc` from anywhere the system picker can reach — that is how a file taken on
+another phone, or pulled off a computer, gets into the grid without asking for a
+storage permission.
 
 Pictures land in `Android/data/dev.mtc/files/Pictures`, which needs no storage
 permission on any supported version and is reachable over USB. The camera asks
@@ -52,7 +54,7 @@ points, all on `dev.mtc.Mtc`:
 ```
 encodeRgba(rgba, w, h, q) -> byte[]
 encodeYuv(y, u, v, w, h, yRowStride, uvRowStride, uvPixelStride,
-          q, fullRange, rotation) -> byte[]
+          q, fullRange, rotation, mirror) -> byte[]
 decodeRgba(mtc, maxSide) -> byte[]      // 8-byte w/h header, then RGBA
 info(mtc) -> String
 ```
@@ -67,6 +69,11 @@ because the pixel loop is already there:
 * **`fullRange`** — devices disagree about whether `YUV_420_888` is BT.601 full
   (0–255) or limited (16–235) range. Guessing wrong shows up as a washed-out or a
   crushed picture, so the camera screen has a switch, remembered across runs.
+* **`mirror`** — a front camera hands back a picture that has to be flipped after
+  the turn to look like what the preview showed.
+
+Exported PNGs go into the system gallery under `Pictures/MTC` (Android 10 and
+later) and fall back to the app folder, so other apps can see them.
 
 `decodeRgba` takes a `maxSide`, so a thumbnail decodes to thumbnail size instead
 of materialising a 12 MP bitmap; that is what keeps the grid cheap.
@@ -111,6 +118,8 @@ left for real hardware:
   screen.
 * **Encode time** on a large sensor, and whether 12 MP at quality 88 is a
   sensible default on a mid-range phone.
-* **Front camera.** `pickBackCamera` falls back to whatever camera exists, and
-  the rotation formula assumes a back-facing sensor; a selfie will probably come
-  out mirrored or turned.
+* **Front camera.** Both sensors are wired up and the maths is unit-tested, but
+  whether the mirroring and the rotation agree with the preview on a real front
+  camera is exactly the sort of thing that only hardware will settle.
+* **System gallery export.** The `MediaStore` insert path has never run; if it
+  throws, the PNG still lands in the app folder, but the toast will say so.
