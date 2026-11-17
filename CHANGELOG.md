@@ -6,6 +6,69 @@ All notable changes to this project. Format based on
 
 ---
 
+## [1.3.0] — 2026-11-17
+
+### Added
+
+* **The Rust codec owns the format.** `rust/` grows from a proof of concept into
+  a library (`container`, `codec`, `entropy`, `aq`, `arith`, `transform`,
+  `imgio`) with three binaries: `mtcodec`, `mtbench` and `mtview`. It writes a
+  new **version 2** stream: an AC dead zone, median-edge-detector prediction of
+  the DC coefficient from the blocks above and left, and a `last` symbol
+  conditioned on the previous block's sparsity. At matched PSNR that is
+  **−11.35 %** over the version 1 stream on four 512×512 photographs and six
+  quality settings each (`rust/results/rd_final.csv`).
+* **Adaptive quantisation.** One quantiser multiplier per 16×16 tile, seven
+  levels from 0.70× to 1.40×, chosen by the encoder from tile activity against
+  the picture median, delta-coded against the previous tile and tapered towards
+  low frequencies. Because an intra frame gives the decoder no reference plane,
+  the level is signalled — it costs well under a byte per tile. Opt-in with
+  `--aq on`; `--aq auto` encodes both and keeps the smaller file that does not
+  lose quality.
+* **`mtview`, the egui viewer.** A white window, the picture fitted to the
+  window, mouse wheel zoom around the cursor between fit and 8×, drag to pan,
+  double-click or `1` back to fit, Esc to close. The header shows mode, quality
+  and size for `.mtc` files; PNG/JPEG/WebP/BMP open as well, which makes it
+  usable for eyeballing a decode against its source. Above 1:1 the texture is
+  nearest-neighbour, so block edges and ringing are visible as they are.
+* **`mtbench` and `bench/rd_compare.py`.** The first measures bytes, bpp, PSNR
+  and encode/decode time per image, quality and stream shape; the second
+  compares two runs **at matched PSNR**, because two encoder settings cannot be
+  compared at the same `-q` — whichever spends more bits scores higher and looks
+  better than it is.
+* **`tests/data/legacy_v1.mtc`.** A file the Python encoder wrote, decoded in a
+  test and compared against a pixel hash taken from the Python decoder.
+
+### Fixed
+
+* **Rust decoded every existing file transposed.** The block was gathered as
+  `blk[x][y]` and the DCT was applied to match, so each 8×8 block came out
+  rotated by 90° relative to the specification — while the Rust encoder and
+  decoder agreed with each other, which is why the round-trip tests passed. All
+  version 1 files now decode bit-exactly, and the fixture test fails if the axes
+  ever swap again.
+
+### Changed
+
+* Version 2 is what the Rust encoder writes; `--v1` still produces the legacy
+  stream and stays a faithful reproduction (plain round-to-nearest, left-only DC
+  prediction, flat model), which is what keeps the migration honest.
+* Adaptive quantisation is **not** the default: it buys about +0.3 dB at a fixed
+  `-q` for +15 % bytes, and at matched PSNR it costs **+8.5 %**. `--aq auto`
+  therefore rejects it on all four test pictures. It stays in the format for
+  perceptual work.
+* The `last` context was measured at −0.45 %; two further contexts (band
+  significance and DC class) were measured at +1.4 % and −0.1 % and removed.
+
+### Measured (not a guarantee)
+
+* 2048×1152 photograph, `-q 85`, 4:2:0, version 2: 397 KB at 33.63 dB, 115 ms
+  encode, 130 ms decode (one core, release build). Version 1 at the same `-q`:
+  457 KB at 34.22 dB.
+* Rate at matched PSNR, version 2 versus version 1: photo_a −5.3 %,
+  photo_b −15.3 %, photo_c −8.5 %, render_d −15.8 %.
+* Tests: 26 unit, 2 compatibility, 9 viewer geometry.
+
 ## [1.2.2] — 2026-11-15
 
 ### Added
@@ -184,6 +247,57 @@ All notable changes to this project. Format based on
 ---
 
 # 中文
+
+## [1.3.0] — 2026-11-17
+
+### 新增
+
+* **Rust 编解码器接手格式。** `rust/` 从一个验证性的小程序长成一个库
+  （`container`、`codec`、`entropy`、`aq`、`arith`、`transform`、`imgio`），
+  外加三个可执行文件：`mtcodec`、`mtbench`、`mtview`。它写新的**版本 2**
+  码流：交流系数零区、直流系数用左/上/左上做中值边缘检测预测、`last` 符号的
+  上下文取前一块的稀疏程度。同 PSNR 下，四张 512×512 实拍、每张六个质量档，
+  比版本 1 码流小 **11.35%**（`rust/results/rd_final.csv`）。
+* **自适应量化。** 每个 16×16 瓦片一个量化倍率，七档从 0.70× 到 1.40×，
+  编码器按瓦片活跃度与全图中位数的比值选档，对前一瓦片做差分编码，倍率向低频
+  倾斜。帧内编码没有参考帧可供解码端推导，所以档位是**写进码流**的——平均每个
+  瓦片远不到一个字节。默认不开，`--aq on` 打开；`--aq auto` 两种都编，
+  选出"质量不降且更小"的那个。
+* **`mtview`，egui 查看器。** 纯白窗口，图片适应窗口，滚轮以光标为中心在
+  "适应窗口"到 8× 之间缩放，拖动平移，双击或按 `1` 回到适应，Esc 关闭。
+  `.mtc` 文件的头部栏显示模式、质量和体积；PNG/JPEG/WebP/BMP 也能直接开，
+  所以拿它对比"原图与解码结果"很顺手。放大到 1:1 以上会切到最近邻采样，
+  块边界和振铃按原样显示，不被插值抹平。
+* **`mtbench` 与 `bench/rd_compare.py`。** 前者按"图片 × 质量 × 码流形态"
+  测字节、bpp、PSNR 和编解码耗时；后者在**同 PSNR** 下比较两次运行——
+  两套编码参数不能用同一个 `-q` 比，谁的字节多谁画质高，看上去占便宜。
+* **`tests/data/legacy_v1.mtc`。** 一个 Python 编码器写出来的文件，测试里解码
+  后与 Python 解码器算出的像素哈希比对。
+
+### 修复
+
+* **Rust 解所有已有文件时都是转置的。** 取块时写成了 `blk[x][y]`，DCT 也跟着
+  这么算，于是每个 8×8 块相对规范都转了 90°——而 Rust 自己的编码器和解码器
+  互相自洽，所以往返测试一直是绿的。现在版本 1 的文件逐位一致，夹具测试会
+  在轴再次写反时报错。
+
+### 变更
+
+* Rust 编码器默认写版本 2；`--v1` 仍能产出旧码流，并且仍然是对参考实现的忠实
+  复刻（普通四舍五入、只用左边块预测直流、扁平模型），迁移才站得住。
+* 自适应量化**不是**默认项：固定 `-q` 下大约 +0.3 dB 换 +15% 字节，
+  而同 PSNR 下要多花 **8.5%**。所以 `--aq auto` 在四张测试图上都把它拒掉。
+  它留在格式里，供偏感知的用途。
+* `last` 上下文实测 −0.45%；另外两个上下文（频带显著性、直流类别）实测分别
+  是 +1.4% 和 −0.1%，已移除。
+
+### 实测（不是承诺）
+
+* 2048×1152 实拍，`-q 85`，4:2:0，版本 2：397 KB、33.63 dB，编码 115 ms、
+  解码 130 ms（单核，release）。同 `-q` 的版本 1：457 KB、34.22 dB。
+* 同 PSNR 下版本 2 相对版本 1：photo_a −5.3%、photo_b −15.3%、photo_c −8.5%、
+  render_d −15.8%。
+* 测试：26 个单元、2 个兼容性、9 个查看器几何。
 
 ## [1.2.1] — 2026-11-15
 
