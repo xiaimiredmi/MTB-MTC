@@ -1,80 +1,93 @@
 # MTC —— 自己写的图片编解码器
 
 MTC 是从零实现的静态图片编解码器。不链接 JPEG、WebP、PNG、HEIC 的库：变换、
-量化、算术编码、颜色空间全部是自己的，容器格式也是自己的。
+量化、算术编码、颜色空间、容器格式全部是自己的。PNG/JPEG/WebP/BMP 只用来
+读写普通图片文件。
 
 一个格式，一个后缀：**`.mtc`**。有损与无损共用一个容器，可选 alpha 与
 4:2:0 / 4:4:4 色度。
 
 ## 特性
 
-- 8×8 DCT，频率倾斜的量化表，YCoCg 颜色，可选 4:2:0。
+- 8×8 DCT，频率倾斜的量化表，交流系数带零区。
+- YCoCg 颜色，可选 4:2:0，色度压得更狠。
+- 直流系数用左/上/左上做中值边缘检测预测。
 - 按 zig-zag 频带分组的自适应二元算术编码。
-- alpha 通道精确保存，不参与有损。
-- 无损模式（空间预测 + 算术编码），适合截图、扫描件。
-- 白色播放器：滚轮缩放（适应窗口～8×）、拖动平移、双击复位。
-
-原来的视频编解码已经从仓库删除。`.mtc` 现在是图片后缀，不再生成 `.mtb`。
+- 无损模式（空间预测 + 同一个算术编码器），逐像素精确。
+- alpha 通道精确，走无损通路，有损 RGB 也能配无损 alpha。
+- 可选逐瓦片自适应量化（实测见下）。
+- 白色查看器：滚轮缩放、拖动平移、双击复位。
 
 ## 安装
 
 ```powershell
-D:\python\python.exe -m pip install -e D:\MTB-MTC
+cd rust
+cargo build --release                      # mtcodec + mtbench
+cargo build --release --features viewer    # 再加 mtview
+
+copy target\release\mtcodec.exe,target\release\mtbench.exe,target\release\mtview.exe ..\bin\
+powershell -ExecutionPolicy Bypass -File ..\deploy\register.ps1
 ```
 
-纯 Python + numpy + Pillow，不编译也能直接跑。
+最后一步把 `.mtc` 关联到 `mtview`、清掉旧视频容器的注册、并把 `bin\` 放到
+用户 `Path` 最前面（不需要管理员）。`deploy\register.ps1 -Unregister` 全部撤销。
 
 ## 用法
 
 ```powershell
-# PNG / JPG / WEBP / BMP / GIF / APNG -> .mtc
-D:\python\python.exe -m mtcodec encode photo.jpg photo.mtc -q 85
+# PNG / JPG / WEBP / BMP -> .mtc
+mtcodec encode photo.jpg photo.mtc -q 85
 
 # .mtc -> PNG / JPG / WEBP（按输出后缀决定）
-D:\python\python.exe -m mtcodec decode photo.mtc out.jpg
+mtcodec decode photo.mtc out.jpg
 
 # 只看头
-D:\python\python.exe -m mtcodec info photo.mtc
+mtcodec info photo.mtc
 
-# 打开播放器
-D:\python\python.exe -m mtcodec open photo.mtc
+# 查看器（PNG/JPEG/WebP/BMP 也能直接开）
+mtview photo.mtc
 ```
 
-无损：
+无损，以及 4:4:4 色度：
 
 ```powershell
-D:\python\python.exe -m mtcodec encode scan.png scan.mtc --lossless
+mtcodec encode scan.png scan.mtc --lossless
+mtcodec encode photo.jpg photo.mtc -q 90 -s 444
 ```
 
-## 播放器
+## 实测
 
-`mtcodec.viewer` 用白色窗口打开 `.mtc`。滚轮以光标为中心缩放，范围从“适应
-窗口”到 8×；按住拖动平移；双击或点缩放读数复位；Esc 关闭。
+- 2048×1152 实拍，`-q 85`，4:2:0，版本 2：397 KB、33.63 dB，编码约 115 ms、
+  解码约 130 ms（单核，release）。
+- 同 PSNR 下版本 2 比版本 1 少 11.3% 字节（四张 512×512 实拍 × 六档质量）。
+- 无损：512×512 实拍 367 KB（11.2 bpp），解码逐位精确。
+- 自适应量化是选开项：固定 `-q` 下约 +0.3 dB 换 +15% 字节，同 PSNR 下不划算。
 
-`rust/target/release/mtview.exe` 是同一套交互的 egui 版本，PNG/JPEG/WebP/BMP
-也能直接开，拿来对比"原图和解码结果"最省事。
+数字、基准工具和比较脚本都在 `rust/` 里。
 
 ## 目录
 
 ```
-mtcodec/image_codec.py   容器与像素流程
-mtcodec/entropy.py       系数模型与块编码
-mtcodec/arithmetic.py    算术编码器
-mtcodec/transform.py     DCT / 量化表
-mtcodec/color.py         YCoCg 与裁剪
-mtcodec/io_bridge.py     PNG/JPG/WEBP/GIF/APNG 桥接
-mtcodec/viewer.py        图片播放器
-mtcodec/cli.py           命令行
-rust/                    Rust 编解码器、基准工具与 egui 查看器
-native/                  早期 Rust 辅助代码
-deploy/                  Windows 关联与 PATH
-tests/                   图片测试
+rust/src/container.rs  头、模式、颜色、alpha、编解码入口
+rust/src/codec.rs      8×8 DCT 平面、量化、重建
+rust/src/entropy.rs    系数块编码与残差模型
+rust/src/aq.rs         自适应量化，每 16×16 瓦片一个倍率
+rust/src/lossless.rs   无损通路与 alpha 的空间预测
+rust/src/arith.rs      二元算术编码器
+rust/src/transform.rs  DCT 矩阵、zig-zag 扫描、量化表
+rust/src/bin/          mtbench（测量）与 mtview（egui 查看器）
+deploy/register.ps1    按用户写文件关联与 PATH
+samples/               .mtc 样本，包括被删掉的 Python 编码器写的那些
 ```
+
+版本 1 码流（被移除的 Python 编码器写的布局）仍然逐位正确解码，
+`rust/tests/data/` 里留了三个样本做夹具测试。
 
 ## 状态
 
-图片是现在的产品方向。格式现在由 `rust/` 里的 Rust 编解码器接手：它写的
-版本 2 码流在同 PSNR 下比 Python 编码器小 11%，能逐位解码所有已有的 `.mtc`，
-还自带 egui 查看器 `mtview`。剩下的是无损模式、算术编码的 alpha 通道，以及
-把 Python 包拆掉。率失真数字放在 `rust/results/`，可以用
-`rust/bench/rd_compare.py` 复现。
+图片是产品方向，格式现在由 `rust/` 里的 Rust 编解码器接手。Python 实现已经
+删除，迁移完成。下一步是体积和速度：同 PSNR 下还没压过 WebP，那是要打的靶子。
+
+## 许可
+
+MIT，见 `LICENSE`。

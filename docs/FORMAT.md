@@ -1,7 +1,8 @@
 # MTC container format
 
 Byte-level specification of the still-image container. Implemented by the Rust
-codec in `rust/`; the Python encoder in `mtcodec/` writes version 1.
+codec in `rust/`. Version 1 is the earlier layout, still decoded bit-exactly; version
+2 is what the encoder writes now.
 
 The video container (`MTC1`) and everything that produced `.mtb` were removed
 from this repository; `.mtc` is the image format.
@@ -58,9 +59,11 @@ byte-exact.
 +-----------------------------+
 ```
 
-`alpha_payload` is a complete PNG file holding the 8-bit alpha plane at the
-picture size. `main_payload` is one complete arithmetic-coded stream. A decoder
-that does not need alpha can skip it entirely.
+`alpha_payload` is one complete arithmetic-coded stream holding the 8-bit alpha
+plane at the picture size, coded with the lossless path of 1.7 (no DCT, no
+quantiser, so it is exact). Decoders also accept a PNG file there, which is how
+the first version 2 files stored alpha. `main_payload` is a second complete
+stream. A decoder that does not need alpha can skip it entirely.
 
 ### 1.4 Lossy payload
 
@@ -104,8 +107,9 @@ that does not need alpha can skip it entirely.
 
 ### 1.5 Version 1 versus version 2
 
-Version 1 is what the Python encoder writes and what every file produced before
-the Rust port contains. Version 2 is what the Rust encoder writes.
+Version 1 is the earlier layout: every file produced before the Rust codec owns
+the format, including the ones the removed Python encoder wrote. Version 2 is
+what the encoder writes now.
 
 | | version 1 | version 2 |
 | --- | --- | --- |
@@ -148,8 +152,8 @@ larger stream.
   same arithmetic coder; clipping ranges are `[0,255]` for luma and `[-300,300]`
   for chroma.
 
-The Rust codec does not implement this mode yet; it reports the mode as
-unsupported instead of guessing.
+The same model codes the alpha segment, with a single plane and a `[0,255]`
+clip.
 
 ### 1.8 Transparency rule
 
@@ -182,8 +186,8 @@ print(magic, version, mode, quality, flags, w, h)
 
 ## 1. MTC —— 静态图片
 
-容器格式的字节级说明。由 `rust/` 里的 Rust 编解码器实现；`mtcodec/` 里的
-Python 编码器写的是版本 1。
+容器格式的字节级说明。由 `rust/` 里的 Rust 编解码器实现。版本 1 是更早的布局，
+仍然逐位正确解码；版本 2 是现在写出的布局。
 
 视频容器（`MTC1`）以及所有产出 `.mtb` 的东西已经从仓库里删掉了，`.mtc`
 就是图片格式。
@@ -227,7 +231,9 @@ alpha 不占 mode 编号，永远作为独立无损平面由 `flags` 标记，�
 main_payload
 ```
 
-`alpha_payload` 是一个完整的 PNG 文件，装原图尺寸的 8 位 alpha 平面。
+`alpha_payload` 是一整条算术编码流，装原图尺寸的 8 位 alpha 平面，走 1.7 的
+无损通路（不做 DCT、不量化，所以是精确的）。解码器也接受这里放一个 PNG 文件，
+那是最早几个版本 2 文件的写法。
 `main_payload` 是一整条算术编码流。不需要 alpha 的解码器可以整段跳过。
 
 ### 1.4 有损数据段
@@ -262,8 +268,8 @@ main_payload
 
 ### 1.5 版本 1 与版本 2
 
-版本 1 是 Python 编码器写的，也是 Rust 移植之前所有文件的内容；版本 2 是
-Rust 编码器写的。
+版本 1 是更早的布局：Rust 接手格式之前的所有文件，包括已删除的 Python 编码器
+写的那些。版本 2 是现在写出的布局。
 
 | | 版本 1 | 版本 2 |
 | --- | --- | --- |
@@ -301,7 +307,7 @@ YCoCg 变换和同一段 alpha。
 * 每平面用左/上空间预测，残差走同一个算术编码器；裁剪范围亮度是 `[0,255]`，
   色度是 `[-300,300]`。
 
-Rust 编解码器还没实现这个模式，遇到它会明确报"不支持"，而不是硬猜。
+同一个模型也用来编 alpha 段，只用一个平面，裁剪范围 `[0,255]`。
 
 ### 1.8 透明规则
 

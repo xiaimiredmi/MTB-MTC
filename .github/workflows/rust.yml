@@ -1,0 +1,48 @@
+name: rust
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: codec tests (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
+      - name: unit and compatibility tests
+        working-directory: rust
+        run: cargo test --release
+      - name: bench binary builds
+        working-directory: rust
+        run: cargo build --release --bin mtbench
+
+  viewer:
+    name: viewer builds (windows)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
+      - name: build mtview
+        working-directory: rust
+        run: cargo build --release --features viewer
+      - name: viewer geometry tests
+        working-directory: rust
+        run: cargo test --release --features viewer --bin mtview
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mtview-windows
+          path: rust/target/release/mtview.exe

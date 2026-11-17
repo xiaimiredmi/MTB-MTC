@@ -6,6 +6,56 @@ All notable changes to this project. Format based on
 
 ---
 
+## [1.4.0] — 2026-11-17
+
+### Added
+
+* **Lossless mode in Rust.** `MODE_GRAY_LOSSLESS` and `MODE_RGB_LOSSLESS` are
+  in: median-edge-detector prediction, residuals through the same arithmetic
+  coder, YCoCg for colour. Decode is pixel-exact, and the encoder is
+  byte-identical to the reference one for the same input (154 246 bytes on both
+  sides for a 512×512 photo), so the streams are interchangeable with the files
+  the old encoder produced.
+* **Alpha coded with the lossless path.** The alpha channel used to travel as a
+  PNG blob in version 2 and as a Python-only residual stream in version 1. Both
+  now go through the same residual coder, which means the Rust codec can read
+  every alpha file, including the ones written before it existed, and write
+  smaller ones. A PNG blob is still accepted when reading.
+* **`deploy/register.ps1`.** Registers `.mtc` to open with `mtview`, points the
+  icon at `deploy/mtc.ico`, removes the old `.mtb` / `MTB.*` registrations, puts
+  `bin\` first on the user `Path` and broadcasts the environment change. Per
+  user, no administrator, `-Unregister` reverses it.
+* **Rust CI.** `.github/workflows/rust.yml` runs the tests on Windows and Linux
+  and builds the viewer.
+
+### Removed
+
+* **The whole Python implementation.** `mtcodec/` (including `mtfastdec.dll`),
+  `pyproject.toml`, `requirements.txt`, `MTBViewer.spec`, `tools/`, `bench/`,
+  `tests/`, `native/`, the Python launchers in `deploy/`, the three Python-only
+  documents (`docs/BUILD.md`, `docs/CONVERT.md`, `docs/PUBLISH.md`), the two
+  experiment reports, the release archives and the `mtc.exe` bundle. The package
+  is uninstalled, so `mtcodec` on `Path` and `python -m mtcodec` both no longer
+  exist. The migration started in `rust/README.md` is finished.
+* Three of its files survive as test fixtures in `rust/tests/data/`: a lossy
+  version 1 stream, a lossless one and an alpha one, each checked against a
+  pixel hash taken from the Python decoder before it was removed.
+
+### Fixed
+
+* **Double-clicking a `.mtc` opened the old viewer.** The `.mtc` class pointed
+  at `pythonw.exe deploy\mtb_launcher.py`, which no longer existed; it now
+  points at `bin\mtview.exe`. Verified through the shell association, not just by
+  reading the registry.
+
+### Measured (not a guarantee)
+
+* Lossless, 512×512 photo: 367 361 bytes (11.2 bpp), decode bit-exact.
+* Lossless of a 2048×1152 photo: 621 313 bytes for the version 1 file in
+  `Downloads`; the Rust decoder reproduces it bit-for-bit against the Python
+  decoder.
+* Tests: 32 unit, 5 compatibility, 9 viewer geometry.
+
 ## [1.3.0] — 2026-11-17
 
 ### Added
@@ -247,6 +297,48 @@ All notable changes to this project. Format based on
 ---
 
 # 中文
+
+## [1.4.0] — 2026-11-17
+
+### 新增
+
+* **Rust 版无损模式。** `MODE_GRAY_LOSSLESS` 与 `MODE_RGB_LOSSLESS` 到位：中值
+  边缘检测预测、残差走同一个算术编码器、彩色走 YCoCg。解码逐像素精确，编码
+  结果与参考实现**逐字节相同**（同样是 512×512 实拍，两边都是 154246 字节），
+  所以和旧编码器产出的文件可以互换。
+* **alpha 也走无损通路。** 以前版本 2 的 alpha 是一个 PNG 数据块，版本 1 的
+  alpha 是 Python 独有的残差流；现在两者都走同一套残差编码器，于是 Rust 能读
+  所有带 alpha 的文件（包括它诞生之前写的），写出来的也更小。读取时仍然接受
+  PNG 数据块。
+* **`deploy/register.ps1`。** 把 `.mtc` 关联到 `mtview`、图标指向
+  `deploy/mtc.ico`、清掉旧的 `.mtb` / `MTB.*` 注册、把 `bin\` 放到用户 `Path`
+  最前面并广播环境变更。按用户生效，不需要管理员，`-Unregister` 可完全撤销。
+* **Rust CI。** `.github/workflows/rust.yml` 在 Windows 与 Linux 上跑测试，并
+  构建查看器。
+
+### 删除
+
+* **整套 Python 实现。** `mtcodec/`（含 `mtfastdec.dll`）、`pyproject.toml`、
+  `requirements.txt`、`MTBViewer.spec`、`tools/`、`bench/`、`tests/`、`native/`、
+  `deploy/` 里的 Python 启动器、三份 Python 专用文档（`docs/BUILD.md`、
+  `docs/CONVERT.md`、`docs/PUBLISH.md`）、两份实验报告、release 压缩包，以及
+  `mtc.exe` 打包产物。包也已卸载，`Path` 上的 `mtcodec` 和 `python -m mtcodec`
+  都不存在了。`rust/README.md` 里列出的迁移到此结束。
+* 其中三个文件以夹具形式留在 `rust/tests/data/`：一个版本 1 有损流、一个无损
+  流、一个带 alpha 的流，各自带着删除前从 Python 解码器算出的像素哈希。
+
+### 修复
+
+* **双击 `.mtc` 打开的还是旧查看器。** `.mtc` 的类指向已经不存在的
+  `pythonw.exe deploy\mtb_launcher.py`，现在指向 `bin\mtview.exe`。是用 shell
+  关联真实启动验证过的，不只是读注册表。
+
+### 实测（不是承诺）
+
+* 无损，512×512 实拍：367361 字节（11.2 bpp），解码逐位精确。
+* 2048×1152 实拍的无损文件（`Downloads` 里那个版本 1 文件，621313 字节）：
+  Rust 解码结果与 Python 解码器逐位一致。
+* 测试：32 个单元、5 个兼容性、9 个查看器几何。
 
 ## [1.3.0] — 2026-11-17
 

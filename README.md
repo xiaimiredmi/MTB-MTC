@@ -1,88 +1,99 @@
 # MTC — a self-built image codec
 
 MTC is a from-scratch still-image codec. No JPEG, WebP, PNG or HEIC library is
-linked in: the transform, quantiser, arithmetic coder and colour conversion are
-our own, and the container is ours.
+linked in: the transform, quantiser, arithmetic coder, colour conversion and the
+container are ours. PNG/JPEG/WebP/BMP are only used to read and write ordinary
+image files.
 
 One format, one extension: **`.mtc`**. Lossy and lossless share the container,
 with optional alpha and 4:2:0 / 4:4:4 chroma.
 
 ## What it does
 
-- 8×8 DCT with a frequency-tilted quantiser, YCoCg colour, optional 4:2:0.
+- 8×8 DCT with a frequency-tilted quantiser and an AC dead zone.
+- YCoCg colour, optional 4:2:0, chroma quantised harder.
+- DC predicted from the blocks above and left by a median edge detector.
 - Adaptive binary arithmetic coding over zig-zag coefficients.
-- Exact alpha channel, stored losslessly alongside the RGB payload.
-- Lossless mode (spatial predictor + arithmetic coding) for pixel-perfect work.
-- White player with mouse-wheel zoom (fit to 8×), drag to pan, double-click to
-  reset.
-
-The video codec that used to live in this repository has been removed. `.mtc`
-is now the image format; `.mtb` is no longer produced.
+- Lossless mode (spatial predictor + the same arithmetic coder), pixel-exact.
+- Exact alpha channel, coded with the lossless path, for lossy or lossless RGB.
+- Optional per-tile adaptive quantisation (see the measurements below).
+- White viewer with mouse-wheel zoom, drag to pan, double-click to fit.
 
 ## Install
 
 ```powershell
-D:\python\python.exe -m pip install -e D:\MTB-MTC
+cd rust
+cargo build --release                      # mtcodec + mtbench
+cargo build --release --features viewer    # + mtview
+
+copy target\release\mtcodec.exe,target\release\mtbench.exe,target\release\mtview.exe ..\bin\
+powershell -ExecutionPolicy Bypass -File ..\deploy\register.ps1
 ```
 
-The package is pure Python plus numpy and Pillow. It runs from the source tree
-without any build step.
+The last step registers `.mtc` to open with `mtview`, clears the old video
+container registrations, and puts `bin\` first on the user `Path` (no
+administrator needed). `deploy\register.ps1 -Unregister` undoes all of it.
 
 ## Use
 
 ```powershell
-# PNG / JPG / WEBP / BMP / GIF / APNG -> .mtc
-D:\python\python.exe -m mtcodec encode photo.jpg photo.mtc -q 85
+# PNG / JPG / WEBP / BMP -> .mtc
+mtcodec encode photo.jpg photo.mtc -q 85
 
 # .mtc -> PNG / JPG / WEBP by output extension
-D:\python\python.exe -m mtcodec decode photo.mtc out.jpg
+mtcodec decode photo.mtc out.jpg
 
 # header only
-D:\python\python.exe -m mtcodec info photo.mtc
+mtcodec info photo.mtc
 
-# open the player
-D:\python\python.exe -m mtcodec open photo.mtc
+# the viewer (also opens PNG/JPEG/WebP/BMP)
+mtview photo.mtc
 ```
 
-Lossless:
+Lossless, and 4:4:4 chroma:
 
 ```powershell
-D:\python\python.exe -m mtcodec encode scan.png scan.mtc --lossless
+mtcodec encode scan.png scan.mtc --lossless
+mtcodec encode photo.jpg photo.mtc -q 90 -s 444
 ```
 
-## Player
+## Measured
 
-`mtcodec.viewer` opens `.mtc` in a white window. Mouse wheel zooms around the
-cursor between fit-to-window and 8×, dragging pans, double-click or clicking the
-zoom readout returns to fit, Esc closes.
+- 2048×1152 photograph, `-q 85`, 4:2:0, version 2: 397 KB at 33.63 dB, about
+  115 ms to encode and 130 ms to decode, one core, release build.
+- Version 2 against version 1 at matched PSNR: 11.3% fewer bytes over four
+  512×512 photographs and six quality settings each.
+- Lossless: 512×512 photo at 367 KB (11.2 bpp), decode is bit-exact.
+- Adaptive quantisation is opt-in: it buys about +0.3 dB at a fixed `-q` for
+  +15% bytes, which is a loss at matched PSNR.
 
-`rust/target/release/mtview.exe` is the same player on egui, and it also opens
-PNG/JPEG/WebP/BMP, which makes it the quickest way to put a decode beside its
-source.
+The numbers, the bench tool and the comparison script live in `rust/`.
 
 ## Repository layout
 
 ```
-mtcodec/image_codec.py   container and pixel pipeline
-mtcodec/entropy.py       coefficient model and block coder
-mtcodec/arithmetic.py    arithmetic coder
-mtcodec/transform.py     DCT / quantiser tables
-mtcodec/color.py         YCoCg and clipping
-mtcodec/io_bridge.py     PNG/JPG/WEBP/GIF/APNG bridge
-mtcodec/viewer.py        image player
-mtcodec/cli.py           command line
-rust/                    Rust codec, bench harness and egui viewer
-native/                  early Rust helpers (dormant)
-deploy/                  Windows registration and PATH setup
-tests/                   image codec tests
+rust/src/container.rs  header, modes, colour, alpha, encode/decode entry points
+rust/src/codec.rs      8x8 DCT planes, quantisation, reconstruction
+rust/src/entropy.rs    coefficient block coder and residual model
+rust/src/aq.rs         adaptive quantisation, one multiplier per 16x16 tile
+rust/src/lossless.rs   spatial prediction for the exact paths and alpha
+rust/src/arith.rs      binary arithmetic coder
+rust/src/transform.rs  DCT matrix, zig-zag scan, quantiser table
+rust/src/bin/          mtbench (measurements) and mtview (egui viewer)
+deploy/register.ps1    file association and PATH, per user
+samples/               .mtc files, including ones the old Python encoder wrote
 ```
+
+Version 1 streams — the layout the removed Python encoder wrote — still decode
+bit-exactly, and `rust/tests/data/` keeps three of them as fixtures.
 
 ## Status
 
-The image path is the product, and the format now belongs to the Rust codec in
-`rust/`: it writes a version 2 stream that is 11% smaller than the Python
-encoder's at matched PSNR, decodes every existing `.mtc` bit-exactly, and comes
-with its own egui viewer (`mtview`). What is left is lossless mode, an
-arithmetic-coded alpha channel, and taking the Python package out. The
-rate/distortion numbers live in `rust/results/` and are reproducible with
-`rust/bench/rd_compare.py`.
+The image path is the product and the Rust codec in `rust/` owns the format.
+The Python implementation has been removed; the migration is complete. What is
+next is size and speed work: the in-house codec still trails WebP on rate at
+matched PSNR, which is the number to beat.
+
+## Licence
+
+MIT, see `LICENSE`.
