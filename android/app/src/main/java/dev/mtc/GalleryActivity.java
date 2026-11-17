@@ -3,6 +3,7 @@ package dev.mtc;
 import android.app.Activity;
 import android.content.Intent;
 import android.graphics.Bitmap;
+import android.graphics.BitmapFactory;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
@@ -112,7 +113,7 @@ public class GalleryActivity extends Activity {
                             @Override
                             public void onClick(android.content.DialogInterface d, int which) {
                                 //noinspection ResultOfMethodCallIgnored
-                                file.delete();
+                                Store.deleteWithThumbnail(file);
                                 cache.remove(file.getAbsolutePath() + "@" + file.lastModified());
                                 reload();
                             }
@@ -250,6 +251,33 @@ public class GalleryActivity extends Activity {
         pool.shutdownNow();
     }
 
+    /**
+     * Thumbnail from the sidecar when there is one, otherwise decode the picture,
+     * keep the result as a sidecar, and use that next time.
+     */
+    private Bitmap loadThumb(File mtc, int side) {
+        if (Store.hasThumbnail(mtc)) {
+            BitmapFactory.Options bounds = new BitmapFactory.Options();
+            bounds.inJustDecodeBounds = true;
+            BitmapFactory.decodeFile(Store.thumbFile(mtc).getAbsolutePath(), bounds);
+            BitmapFactory.Options opts = new BitmapFactory.Options();
+            int scale = 1;
+            while (bounds.outWidth / (scale * 2) >= side && bounds.outHeight / (scale * 2) >= side) {
+                scale *= 2;
+            }
+            opts.inSampleSize = scale;
+            Bitmap cached = BitmapFactory.decodeFile(
+                    Store.thumbFile(mtc).getAbsolutePath(), opts);
+            if (cached != null) {
+                return cached;
+            }
+        }
+        Store.writeThumbnail(mtc, Math.max(320, side));
+        return Store.hasThumbnail(mtc)
+                ? BitmapFactory.decodeFile(Store.thumbFile(mtc).getAbsolutePath())
+                : Mtc.thumbnail(mtc, side);
+    }
+
     private int dp(int v) {
         return Math.round(v * getResources().getDisplayMetrics().density);
     }
@@ -289,7 +317,7 @@ public class GalleryActivity extends Activity {
             pool.execute(new Runnable() {
                 @Override
                 public void run() {
-                    final Bitmap bmp = Mtc.thumbnail(file, side);
+                    final Bitmap bmp = loadThumb(file, side);
                     if (bmp == null) {
                         return;
                     }

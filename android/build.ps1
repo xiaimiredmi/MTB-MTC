@@ -18,6 +18,8 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+# `-File` hands a comma list through as one string, so split it back up.
+$Abis = @($Abis -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ })
 $env:JAVA_TOOL_OPTIONS = '-Duser.language=en -Duser.country=US'
 
 $here = $PSScriptRoot

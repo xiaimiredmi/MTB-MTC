@@ -89,6 +89,50 @@ public final class Store {
         }
     }
 
+    /**
+     * The cached thumbnail for a picture.
+     *
+     * <p>Decoding a 12 MP file takes half a second; doing that for every cell of
+     * the grid every time it is opened is not acceptable. The first view writes a
+     * small PNG next to the picture and every later view reads that instead.
+     */
+    public static File thumbFile(File mtc) {
+        return new File(mtc.getAbsolutePath() + ".thumb.png");
+    }
+
+    /** Build (or refresh) the cached thumbnail; returns false if it could not. */
+    public static boolean writeThumbnail(File mtc, int side) {
+        File thumb = thumbFile(mtc);
+        android.graphics.Bitmap bmp = Mtc.thumbnail(mtc, side);
+        if (bmp == null) {
+            return false;
+        }
+        try {
+            FileOutputStream out = new FileOutputStream(thumb);
+            try {
+                return bmp.compress(android.graphics.Bitmap.CompressFormat.PNG, 95, out);
+            } finally {
+                out.close();
+                bmp.recycle();
+            }
+        } catch (IOException e) {
+            return false;
+        }
+    }
+
+    /** True when the cached thumbnail is at least as new as the picture. */
+    public static boolean hasThumbnail(File mtc) {
+        File thumb = thumbFile(mtc);
+        return thumb.exists() && thumb.lastModified() >= mtc.lastModified();
+    }
+
+    public static void deleteWithThumbnail(File mtc) {
+        //noinspection ResultOfMethodCallIgnored
+        thumbFile(mtc).delete();
+        //noinspection ResultOfMethodCallIgnored
+        mtc.delete();
+    }
+
     public static String human(long bytes) {
         if (bytes >= 1024L * 1024L) {
             return String.format(Locale.US, "%.2f MB", bytes / 1048576.0);

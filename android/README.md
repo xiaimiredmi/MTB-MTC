@@ -9,6 +9,8 @@ JNI.
 ```powershell
 powershell -ExecutionPolicy Bypass -File android\build.ps1            # arm64-v8a
 powershell -ExecutionPolicy Bypass -File android\build.ps1 -Install    # + adb install -r
+# every phone, 32-bit included:
+powershell -ExecutionPolicy Bypass -File android\build.ps1 -Abis arm64-v8a,armeabi-v7a
 ```
 
 The output is `android/mtc-camera.apk`, signed with the debug key. The script
@@ -41,6 +43,12 @@ storage permission.
 Pictures land in `Android/data/dev.mtc/files/Pictures`, which needs no storage
 permission on any supported version and is reachable over USB. The camera asks
 only for `CAMERA`.
+
+Next to each picture sits a `<name>.mtc.thumb.png`, the grid's cache. Decoding a
+12 MP file to fill a grid cell takes about half a second on this machine and
+longer on a phone, so it happens once — right after the shutter, on the camera
+thread, and again lazily for files that arrived by import — and every later view
+of the grid reads the small PNG instead.
 
 The still is capped at 12 MP (`MAX_PIXELS`) and the encoder quality is 88; both
 are constants at the top of `CameraActivity` and `jni/src/lib.rs` respectively.
@@ -103,6 +111,18 @@ powershell -ExecutionPolicy Bypass -File android\jni\host\run.ps1
 That covers the four entry points, the array marshalling, the `jboolean`/`jint`
 widths, the rotation and the thumbnail bound — everything except the Android
 camera itself.
+
+## Measured on the host
+
+Single core of an i5-6440HQ, release build, 4:2:0, quality 88 — the phone will be
+slower, so these are a floor, not a promise:
+
+| picture | encode | decode | size |
+| --- | --- | --- | --- |
+| 2600×1950 (5 MP) | 155 ms | 215 ms | 402 KB |
+| 4000×3000 (12 MP) | 359 ms | 525 ms | 699 KB |
+
+That is why the camera caps the still at 12 MP and the grid caches thumbnails.
 
 ## Known unknowns
 

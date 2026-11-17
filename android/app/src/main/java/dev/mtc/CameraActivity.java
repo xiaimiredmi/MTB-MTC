@@ -499,6 +499,16 @@ public class CameraActivity extends Activity {
         }
         final File out = Store.nextPhoto(this);
         final boolean ok = Store.write(out, encoded);
+        if (ok) {
+            // Decoding 12 MP to fill a grid cell is expensive; pay it once, off
+            // the shutter path, and cache the result next to the picture.
+            cameraHandler.post(new Runnable() {
+                @Override
+                public void run() {
+                    Store.writeThumbnail(out, 384);
+                }
+            });
+        }
         ui.post(new Runnable() {
             @Override
             public void run() {
