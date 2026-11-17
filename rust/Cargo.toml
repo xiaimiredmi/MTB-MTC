@@ -11,8 +11,25 @@ path = "src/lib.rs"
 name = "mtcodec"
 path = "src/main.rs"
 
+[[bin]]
+name = "mtbench"
+path = "src/bin/mtbench.rs"
+
+[[bin]]
+name = "mtview"
+path = "src/bin/mtview.rs"
+required-features = ["viewer"]
+
+[features]
+default = []
+viewer = ["dep:eframe"]
+# Build the viewer with eframe's off-screen screenshot hook, used by the build
+# check: EFRAME_SCREENSHOT_TO=shot.png takes one frame and exits.
+viewer-shot = ["viewer", "eframe/__screenshot"]
+
 [dependencies]
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp", "bmp"] }
+eframe = { version = "0.27", optional = true, default-features = false, features = ["glow", "default_fonts"] }
 
 [profile.release]
 opt-level = 3
