@@ -51,6 +51,9 @@ D:\python\python.exe -m mtcodec encode scan.png scan.mtc --lossless
 `mtcodec.viewer` 用白色窗口打开 `.mtc`。滚轮以光标为中心缩放，范围从“适应
 窗口”到 8×；按住拖动平移；双击或点缩放读数复位；Esc 关闭。
 
+`rust/target/release/mtview.exe` 是同一套交互的 egui 版本，PNG/JPEG/WebP/BMP
+也能直接开，拿来对比"原图和解码结果"最省事。
+
 ## 目录
 
 ```
@@ -62,12 +65,16 @@ mtcodec/color.py         YCoCg 与裁剪
 mtcodec/io_bridge.py     PNG/JPG/WEBP/GIF/APNG 桥接
 mtcodec/viewer.py        图片播放器
 mtcodec/cli.py           命令行
-native/                  Rust 辅助代码（下一轮图片提速用）
+rust/                    Rust 编解码器、基准工具与 egui 查看器
+native/                  早期 Rust 辅助代码
 deploy/                  Windows 关联与 PATH
 tests/                   图片测试
 ```
 
 ## 状态
 
-图片是现在的产品方向。下一轮：大图 Rust 提速，以及同 PSNR 下体积压过 WebP
-的画质/体积优化。测试和基准输出不放在仓库里。
+图片是现在的产品方向。格式现在由 `rust/` 里的 Rust 编解码器接手：它写的
+版本 2 码流在同 PSNR 下比 Python 编码器小 11%，能逐位解码所有已有的 `.mtc`，
+还自带 egui 查看器 `mtview`。剩下的是无损模式、算术编码的 alpha 通道，以及
+把 Python 包拆掉。率失真数字放在 `rust/results/`，可以用
+`rust/bench/rd_compare.py` 复现。

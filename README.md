@@ -56,6 +56,10 @@ D:\python\python.exe -m mtcodec encode scan.png scan.mtc --lossless
 cursor between fit-to-window and 8×, dragging pans, double-click or clicking the
 zoom readout returns to fit, Esc closes.
 
+`rust/target/release/mtview.exe` is the same player on egui, and it also opens
+PNG/JPEG/WebP/BMP, which makes it the quickest way to put a decode beside its
+source.
+
 ## Repository layout
 
 ```
@@ -67,13 +71,18 @@ mtcodec/color.py         YCoCg and clipping
 mtcodec/io_bridge.py     PNG/JPG/WEBP/GIF/APNG bridge
 mtcodec/viewer.py        image player
 mtcodec/cli.py           command line
-native/                  Rust helpers (kept for the next image speed pass)
+rust/                    Rust codec, bench harness and egui viewer
+native/                  early Rust helpers (dormant)
 deploy/                  Windows registration and PATH setup
 tests/                   image codec tests
 ```
 
 ## Status
 
-The image path is the product. The next work is a Rust speed pass for large
-photos and a size/quality pass aimed at beating WebP at matched PSNR. Benchmarks
-and test output live outside the repository.
+The image path is the product, and the format now belongs to the Rust codec in
+`rust/`: it writes a version 2 stream that is 11% smaller than the Python
+encoder's at matched PSNR, decodes every existing `.mtc` bit-exactly, and comes
+with its own egui viewer (`mtview`). What is left is lossless mode, an
+arithmetic-coded alpha channel, and taking the Python package out. The
+rate/distortion numbers live in `rust/results/` and are reproducible with
+`rust/bench/rd_compare.py`.
