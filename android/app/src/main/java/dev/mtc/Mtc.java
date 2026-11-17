@@ -29,10 +29,17 @@ public final class Mtc {
 
     public static native byte[] encodeRgba(byte[] rgba, int width, int height, int quality);
 
+    /**
+     * One camera frame, straight to `.mtc`.
+     *
+     * @param fullRange true for BT.601 full range, false for limited (16..235),
+     *                  which devices disagree about; the camera screen exposes it
+     * @param rotation  clockwise quarter turn in degrees, 0/90/180/270
+     */
     public static native byte[] encodeYuv(byte[] y, byte[] u, byte[] v,
                                           int width, int height,
                                           int yRowStride, int uvRowStride, int uvPixelStride,
-                                          int quality);
+                                          int quality, boolean fullRange, int rotation);
 
     public static native byte[] decodeRgba(byte[] mtc, int maxSide);
 

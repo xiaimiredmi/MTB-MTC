@@ -1,21 +1,25 @@
 //! JNI surface between the Android app and the MTC codec.
 //!
-//! Everything the app needs is a handful of calls: turn a camera frame into
-//! `.mtc` bytes, turn `.mtc` bytes back into pixels, and say how big a file is
-//! without decoding it. Pixel buffers are passed as `jbyteArray` of RGBA so the
-//! Java side never has to think about the container.
+//! The app needs four things: turn a camera frame into `.mtc` bytes, turn `.mtc`
+//! bytes back into pixels, ask a file what it is, and nothing else. Pixel buffers
+//! are `jbyteArray` of RGBA, so the Java side never touches the container.
 //!
-//! The decoded buffer carries its own size in the first eight bytes (two
-//! big-endian `u32`), which saves a second JNI round trip per image.
+//! A decoded buffer carries its own size in the first eight bytes (two
+//! big-endian `u32`), which saves a second JNI round trip per image, and is
+//! exactly the layout `Bitmap.copyPixelsFromBuffer` wants (Android stores
+//! `ARGB_8888` as RGBA bytes).
+//!
+//! Two camera realities are handled here rather than in Java, because the pixel
+//! loop already lives here: the colour range of a `YUV_420_888` frame (devices
+//! disagree between BT.601 full and limited range) and the quarter turn needed to
+//! make a still upright, since `JPEG_ORIENTATION` only applies to JPEG output.
 
 use jni::objects::{JByteArray, JClass};
-use jni::sys::{jbyteArray, jint};
+use jni::sys::{jboolean, jbyteArray, jint, JNI_FALSE};
 use jni::JNIEnv;
 
 use mtc::container::{self, AqMode, Image, Options};
 
-/// Everything the app asks for is 4:2:0 at a fixed quality unless it says
-/// otherwise; photos are the only thing this build is for.
 fn options(quality: i32) -> Options {
     Options {
         quality: quality.clamp(1, 100) as u8,
@@ -38,9 +42,15 @@ fn give_bytes(env: &mut JNIEnv, data: &[u8]) -> jbyteArray {
     }
 }
 
+fn encode_rgba_bytes(rgba: Vec<u8>, w: usize, h: usize, quality: i32) -> Option<Vec<u8>> {
+    if w == 0 || h == 0 || rgba.len() != w * h * 4 {
+        return None;
+    }
+    let img = Image::new(w, h, 4, rgba).ok()?;
+    container::encode(&img, &options(quality)).ok()
+}
+
 /// `encodeRgba(rgba, width, height, quality) -> byte[] | null`
-///
-/// `rgba` is `width * height * 4` bytes, row major.
 #[no_mangle]
 pub extern "system" fn Java_dev_mtc_Mtc_encodeRgba(
     mut env: JNIEnv,
@@ -55,24 +65,16 @@ pub extern "system" fn Java_dev_mtc_Mtc_encodeRgba(
         Err(_) => return std::ptr::null_mut(),
     };
     let (w, h) = (width.max(0) as usize, height.max(0) as usize);
-    if w == 0 || h == 0 || px.len() != w * h * 4 {
-        return std::ptr::null_mut();
-    }
-    let img = match Image::new(w, h, 4, px) {
-        Ok(v) => v,
-        Err(_) => return std::ptr::null_mut(),
-    };
-    match container::encode(&img, &options(quality)) {
-        Ok(blob) => give_bytes(&mut env, &blob),
-        Err(_) => std::ptr::null_mut(),
+    match encode_rgba_bytes(px, w, h, quality) {
+        Some(blob) => give_bytes(&mut env, &blob),
+        None => std::ptr::null_mut(),
     }
 }
 
-/// `encodeYuv(y, u, v, width, height, yRowStride, uvRowStride, uvPixelStride, quality)`
+/// `encodeYuv(y, u, v, width, height, yRowStride, uvRowStride, uvPixelStride,
+///            quality, fullRange, rotation) -> byte[] | null`
 ///
-/// Camera2 hands out `YUV_420_888` with arbitrary strides; converting here keeps
-/// the pixel loop in Rust, where the encoder already lives. Returns `.mtc` bytes
-/// or null.
+/// `rotation` is a clockwise quarter turn in degrees, 0/90/180/270.
 #[no_mangle]
 #[allow(clippy::too_many_arguments)]
 pub extern "system" fn Java_dev_mtc_Mtc_encodeYuv(
@@ -87,6 +89,8 @@ pub extern "system" fn Java_dev_mtc_Mtc_encodeYuv(
     uv_row_stride: jint,
     uv_pixel_stride: jint,
     quality: jint,
+    full_range: jboolean,
+    rotation: jint,
 ) -> jbyteArray {
     let (py, pu, pv) = match (
         take_bytes(&mut env, y),
@@ -107,15 +111,21 @@ pub extern "system" fn Java_dev_mtc_Mtc_encodeYuv(
         return std::ptr::null_mut();
     }
 
-    let rgba = yuv_to_rgba(&py, &pu, &pv, w, h, y_stride, uv_stride, uv_pixel);
-
-    let img = match Image::new(w, h, 4, rgba) {
-        Ok(v) => v,
-        Err(_) => return std::ptr::null_mut(),
-    };
-    match container::encode(&img, &options(quality)) {
-        Ok(blob) => give_bytes(&mut env, &blob),
-        Err(_) => std::ptr::null_mut(),
+    let (rgba, ow, oh) = yuv_to_rgba(
+        &py,
+        &pu,
+        &pv,
+        w,
+        h,
+        y_stride,
+        uv_stride,
+        uv_pixel,
+        full_range != JNI_FALSE as jboolean,
+        rotation.max(0) as u32,
+    );
+    match encode_rgba_bytes(rgba, ow, oh, quality) {
+        Some(blob) => give_bytes(&mut env, &blob),
+        None => std::ptr::null_mut(),
     }
 }
 
@@ -165,7 +175,7 @@ fn downsample(rgba: &[u8], w: usize, h: usize, step: usize) -> Vec<u8> {
     out
 }
 
-/// `info(data) -> String` — a one-line summary for the gallery header, or null.
+/// `info(data) -> String` — a one-line summary for the header, or null.
 #[no_mangle]
 pub extern "system" fn Java_dev_mtc_Mtc_info(
     mut env: JNIEnv,
@@ -193,10 +203,34 @@ pub extern "system" fn Java_dev_mtc_Mtc_info(
     }
 }
 
-/// `YUV_420_888` to RGBA, BT.601 full range.
+/// Luma to `0..255`, honouring the range the device used.
+#[inline]
+fn luma(y: u8, full: bool) -> i32 {
+    let y = y as i32;
+    if full {
+        y
+    } else {
+        (((y - 16) * 255) / 219).clamp(0, 255)
+    }
+}
+
+/// Chroma to a signed offset around zero, honouring the range.
+#[inline]
+fn chroma(c: u8, full: bool) -> i32 {
+    let c = c as i32 - 128;
+    if full {
+        c
+    } else {
+        (c * 255) / 224
+    }
+}
+
+/// `YUV_420_888` to RGBA, BT.601, optionally rotated clockwise.
 ///
 /// Camera2 hands out the same sampling grid for U and V with arbitrary strides,
-/// so one pair of strides describes both planes.
+/// so one pair of strides describes both planes. Returns the pixels and the
+/// rotated size.
+#[allow(clippy::too_many_arguments)]
 pub fn yuv_to_rgba(
     py: &[u8],
     pu: &[u8],
@@ -206,30 +240,39 @@ pub fn yuv_to_rgba(
     y_stride: usize,
     uv_stride: usize,
     uv_pixel: usize,
-) -> Vec<u8> {
-    let mut rgba = vec![0u8; w * h * 4];
+    full_range: bool,
+    rotation: u32,
+) -> (Vec<u8>, usize, usize) {
+    let quarter = (rotation / 90) % 4;
+    let (ow, oh) = if quarter % 2 == 0 { (w, h) } else { (h, w) };
+    let mut out = vec![0u8; ow * oh * 4];
     for row in 0..h {
         for col in 0..w {
-            let yv = py[row * y_stride + col] as i32;
-            let c_row = row / 2;
-            let c_col = col / 2;
-            let idx = c_row * uv_stride + c_col * uv_pixel;
+            let yv = luma(py[row * y_stride + col], full_range);
+            let idx = (row / 2) * uv_stride + (col / 2) * uv_pixel;
             let (uu, vv) = if idx < pu.len() && idx < pv.len() {
-                (pu[idx] as i32 - 128, pv[idx] as i32 - 128)
+                (chroma(pu[idx], full_range), chroma(pv[idx], full_range))
             } else {
                 (0, 0)
             };
             let r = yv + (91881 * vv >> 16);
             let g = yv - (22554 * uu + 46802 * vv >> 16);
             let b = yv + (116130 * uu >> 16);
-            let o = (row * w + col) * 4;
-            rgba[o] = r.clamp(0, 255) as u8;
-            rgba[o + 1] = g.clamp(0, 255) as u8;
-            rgba[o + 2] = b.clamp(0, 255) as u8;
-            rgba[o + 3] = 255;
+
+            let (dr, dc) = match quarter {
+                1 => (col, h - 1 - row),
+                2 => (h - 1 - row, w - 1 - col),
+                3 => (w - 1 - col, row),
+                _ => (row, col),
+            };
+            let o = (dr * ow + dc) * 4;
+            out[o] = r.clamp(0, 255) as u8;
+            out[o + 1] = g.clamp(0, 255) as u8;
+            out[o + 2] = b.clamp(0, 255) as u8;
+            out[o + 3] = 255;
         }
     }
-    rgba
+    (out, ow, oh)
 }
 
 /// A decoded picture with its size in front, which is what Java reads back.
@@ -245,27 +288,45 @@ pub fn pack(w: usize, h: usize, rgba: &[u8]) -> Vec<u8> {
 mod tests {
     use super::*;
 
-    fn grey_frame(w: usize, h: usize, luma: u8) -> (Vec<u8>, Vec<u8>, Vec<u8>) {
-        (vec![luma; w * h], vec![128; (w / 2) * (h / 2)], vec![128; (w / 2) * (h / 2)])
+    fn grey_frame(w: usize, h: usize, luma_value: u8) -> (Vec<u8>, Vec<u8>, Vec<u8>) {
+        (
+            vec![luma_value; w * h],
+            vec![128; (w / 2) * (h / 2)],
+            vec![128; (w / 2) * (h / 2)],
+        )
     }
 
     #[test]
     fn neutral_chroma_is_grey() {
         let (y, u, v) = grey_frame(8, 8, 180);
-        let rgba = yuv_to_rgba(&y, &u, &v, 8, 8, 8, 4, 1);
+        let (rgba, _, _) = yuv_to_rgba(&y, &u, &v, 8, 8, 8, 4, 1, true, 0);
         assert_eq!(&rgba[0..4], &[180, 180, 180, 255]);
         assert_eq!(&rgba[4..8], &[180, 180, 180, 255]);
     }
 
     #[test]
+    fn limited_range_is_expanded() {
+        let (y, u, v) = grey_frame(4, 4, 16);
+        let (black, _, _) = yuv_to_rgba(&y, &u, &v, 4, 4, 4, 2, 1, false, 0);
+        assert_eq!(black[0], 0);
+        let (y, u, v) = grey_frame(4, 4, 235);
+        let (white, _, _) = yuv_to_rgba(&y, &u, &v, 4, 4, 4, 2, 1, false, 0);
+        assert_eq!(white[0], 255);
+        // The same luma reads brighter through limited range than through full.
+        let (y, u, v) = grey_frame(4, 4, 180);
+        let (lim, _, _) = yuv_to_rgba(&y, &u, &v, 4, 4, 4, 2, 1, false, 0);
+        let (full, _, _) = yuv_to_rgba(&y, &u, &v, 4, 4, 4, 2, 1, true, 0);
+        assert!(lim[0] > full[0], "{} vs {}", lim[0], full[0]);
+    }
+
+    #[test]
     fn chroma_shifts_the_channels_the_right_way() {
         // Pure blue in BT.601: Y=41, U=240, V=110.
-        let w = 4;
-        let h = 4;
+        let (w, h) = (4, 4);
         let y = vec![41u8; w * h];
         let u = vec![240u8; (w / 2) * (h / 2)];
         let v = vec![110u8; (w / 2) * (h / 2)];
-        let rgba = yuv_to_rgba(&y, &u, &v, w, h, w, w / 2, 1);
+        let (rgba, _, _) = yuv_to_rgba(&y, &u, &v, w, h, w, w / 2, 1, true, 0);
         let (r, g, b) = (rgba[0] as i32, rgba[1] as i32, rgba[2] as i32);
         assert!(b > 200, "blue {} {} {}", r, g, b);
         assert!(r < 60, "red {} {} {}", r, g, b);
@@ -274,15 +335,52 @@ mod tests {
 
     #[test]
     fn strided_rows_are_walked_correctly() {
-        // 2x1 visible pixels in a 3-wide row: the padding must be skipped.
+        // Two visible pixels in a three-wide row: the padding must be skipped.
         let y = vec![10u8, 20, 99, 30, 40, 99];
         let u = vec![128u8, 128];
         let v = vec![128u8, 128];
-        let rgba = yuv_to_rgba(&y, &u, &v, 2, 2, 3, 1, 1);
+        let (rgba, _, _) = yuv_to_rgba(&y, &u, &v, 2, 2, 3, 1, 1, true, 0);
         assert_eq!(rgba[0], 10);
         assert_eq!(rgba[4], 20);
         assert_eq!(rgba[8], 30);
         assert_eq!(rgba[12], 40);
+    }
+
+    #[test]
+    fn quarter_turns_rotate_and_swap_the_size() {
+        // 3x2 source, one distinct grey per pixel, so the mapping is readable.
+        let (w, h) = (3usize, 2usize);
+        let y = vec![10u8, 20, 30, 40, 50, 60];
+        let u = vec![128u8; (w / 2) * (h / 2)];
+        let v = vec![128u8; (w / 2) * (h / 2)];
+        let go = |rotation: u32| {
+            let (rgba, ow, oh) = yuv_to_rgba(&y, &u, &v, w, h, w, w / 2, 1, true, rotation);
+            (move |row: usize, col: usize| rgba[(row * ow + col) * 4], ow, oh)
+        };
+
+        let (px, ow, oh) = go(0);
+        assert_eq!((ow, oh), (3, 2));
+        assert_eq!((px(0, 0), px(1, 2)), (10, 60));
+
+        // Clockwise: the old top-left is the new top-right, and the size swaps.
+        //   40 10
+        //   50 20
+        //   60 30
+        let (px, ow, oh) = go(90);
+        assert_eq!((ow, oh), (2, 3));
+        assert_eq!((px(0, 0), px(0, 1)), (40, 10));
+        assert_eq!((px(1, 0), px(1, 1)), (50, 20));
+        assert_eq!((px(2, 0), px(2, 1)), (60, 30));
+
+        // Half turn: opposite corners swap, the size does not.
+        let (px, ow, oh) = go(180);
+        assert_eq!((ow, oh), (3, 2));
+        assert_eq!((px(0, 0), px(1, 2)), (60, 10));
+
+        // Three quarters: the old bottom-left becomes the new top-left.
+        let (px, ow, oh) = go(270);
+        assert_eq!((ow, oh), (2, 3));
+        assert_eq!(px(0, 0), 30);
     }
 
     #[test]
@@ -294,6 +392,7 @@ mod tests {
         assert_eq!(packed.len(), 8 + rgba.len());
         assert_eq!(&packed[8..], &rgba[..]);
     }
+
     #[test]
     fn camera_frame_round_trips_through_the_codec() {
         // The whole phone path, minus the phone: YUV frame -> RGBA -> .mtc -> RGBA.
@@ -306,16 +405,18 @@ mod tests {
         }
         let u = vec![110u8; (w / 2) * (h / 2)];
         let v = vec![140u8; (w / 2) * (h / 2)];
-        let rgba = yuv_to_rgba(&y, &u, &v, w, h, w, w / 2, 1);
+        let (rgba, ow, oh) = yuv_to_rgba(&y, &u, &v, w, h, w, w / 2, 1, true, 90);
+        assert_eq!((ow, oh), (48, 64));
 
-        let img = mtc::container::Image::new(w, h, 4, rgba).unwrap();
+        let img = mtc::container::Image::new(ow, oh, 4, rgba).unwrap();
         let blob = mtc::container::encode(&img, &mtc::container::Options::default()).unwrap();
         let back = mtc::container::decode(&blob).unwrap();
+        assert_eq!((back.width, back.height), (ow, oh));
         let psnr = back.psnr_visible(&img);
         assert!(psnr > 30.0, "psnr {:.2}, {} bytes", psnr, blob.len());
 
-        let packed = pack(w, h, &back.to_rgba());
-        assert_eq!(&packed[0..4], &(w as u32).to_be_bytes());
-        assert_eq!(packed.len(), 8 + w * h * 4);
+        let packed = pack(back.width, back.height, &back.to_rgba());
+        assert_eq!(&packed[0..4], &(ow as u32).to_be_bytes());
+        assert_eq!(packed.len(), 8 + ow * oh * 4);
     }
 }

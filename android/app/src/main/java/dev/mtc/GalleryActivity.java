@@ -10,6 +10,7 @@ import android.util.LruCache;
 import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
+import android.app.AlertDialog;
 import android.widget.BaseAdapter;
 import android.widget.Button;
 import android.widget.FrameLayout;
@@ -90,6 +91,28 @@ public class GalleryActivity extends Activity {
                 Intent i = new Intent(GalleryActivity.this, ViewerActivity.class);
                 i.putExtra(ViewerActivity.EXTRA_PATH, files.get(position).getAbsolutePath());
                 startActivity(i);
+            }
+        });
+        grid.setOnItemLongClickListener(new android.widget.AdapterView.OnItemLongClickListener() {
+            @Override
+            public boolean onItemLongClick(android.widget.AdapterView<?> parent, View view,
+                                           final int position, long id) {
+                final File file = files.get(position);
+                new AlertDialog.Builder(GalleryActivity.this)
+                        .setTitle(file.getName())
+                        .setMessage(Store.human(file.length()) + "，要删除吗？")
+                        .setNegativeButton("取消", null)
+                        .setPositiveButton("删除", new android.content.DialogInterface.OnClickListener() {
+                            @Override
+                            public void onClick(android.content.DialogInterface d, int which) {
+                                //noinspection ResultOfMethodCallIgnored
+                                file.delete();
+                                cache.remove(file.getAbsolutePath() + "@" + file.lastModified());
+                                reload();
+                            }
+                        })
+                        .show();
+                return true;
             }
         });
         root.addView(grid, new LinearLayout.LayoutParams(

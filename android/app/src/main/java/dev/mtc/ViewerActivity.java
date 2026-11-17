@@ -25,6 +25,7 @@ public class ViewerActivity extends Activity {
     private final Handler ui = new Handler(Looper.getMainLooper());
     private ZoomView zoom;
     private TextView status;
+    private File current;
 
     @Override
     protected void onCreate(Bundle state) {
@@ -59,6 +60,19 @@ public class ViewerActivity extends Activity {
         status.setPadding(dp(16), 0, 0, 0);
         bar.addView(status, new LinearLayout.LayoutParams(0,
                 LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+
+        TextView export = new TextView(this);
+        export.setText("导出 PNG");
+        export.setTextColor(0xFFF2F2F4);
+        export.setTextSize(13);
+        export.setPadding(dp(14), 0, 0, 0);
+        bar.addView(export);
+        export.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                exportPng();
+            }
+        });
         root.addView(bar, new FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.WRAP_CONTENT,
                 Gravity.TOP));
@@ -74,7 +88,8 @@ public class ViewerActivity extends Activity {
             finish();
             return;
         }
-        open(new File(path));
+        current = new File(path);
+        open(current);
     }
 
     /** Content URIs arrive from other apps; copy into our own storage first. */
@@ -132,6 +147,54 @@ public class ViewerActivity extends Activity {
                 });
             }
         }, "mtc-decode").start();
+    }
+
+    /**
+     * Write the picture out as a PNG next to the .mtc files.
+     *
+     * <p>Without this the photos are trapped: only this app reads .mtc. The PNG
+     * lands in the same folder, which is visible over USB, and the path is
+     * reported so it can be found.
+     */
+    private void exportPng() {
+        Bitmap bmp = zoom.getBitmap();
+        if (bmp == null) {
+            Toast.makeText(this, "还没有解出图片", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        final String name = current == null ? "export" : current.getName();
+        final Bitmap copy = bmp;
+        status.setText("导出中…");
+        new Thread(new Runnable() {
+            @Override
+            public void run() {
+                File out = new File(Store.dir(ViewerActivity.this),
+                        name.replaceAll("\\.mtc$", "") + ".png");
+                boolean ok = false;
+                try {
+                    FileOutputStream fos = new FileOutputStream(out);
+                    try {
+                        ok = copy.compress(Bitmap.CompressFormat.PNG, 100, fos);
+                    } finally {
+                        fos.close();
+                    }
+                } catch (Exception e) {
+                    ok = false;
+                }
+                final boolean written = ok;
+                ui.post(new Runnable() {
+                    @Override
+                    public void run() {
+                        status.setText(written
+                                ? "已导出 " + out.getAbsolutePath()
+                                : "导出失败");
+                        Toast.makeText(ViewerActivity.this,
+                                written ? "已导出 PNG" : "导出失败",
+                                Toast.LENGTH_SHORT).show();
+                    }
+                });
+            }
+        }, "mtc-export").start();
     }
 
     @Override

@@ -58,6 +58,7 @@ public class CameraActivity extends Activity {
     private FrameLayout root;
     private TextureView preview;
     private TextView hud;
+    private TextView rangeToggle;
     private CameraDevice device;
     private CameraCaptureSession session;
     private ImageReader stills;
@@ -65,6 +66,10 @@ public class CameraActivity extends Activity {
     private String cameraId;
     private boolean busy;
     private final int quality = 88;
+    private int sensorOrientation = 90;
+    /** BT.601 range of the frames this device hands out. Devices disagree, so
+     *  the camera screen has a switch and the choice is remembered. */
+    private boolean fullRange;
 
     @Override
     protected void onCreate(Bundle state) {
@@ -121,6 +126,28 @@ public class CameraActivity extends Activity {
 
         setContentView(root);
 
+        rangeToggle = new TextView(this);
+        rangeToggle.setTextColor(0xFFEDEDF0);
+        rangeToggle.setTextSize(12);
+        rangeToggle.setPadding(dp(16), dp(10), dp(16), dp(10));
+        rangeToggle.setBackgroundColor(0x66000000);
+        FrameLayout.LayoutParams rlp = new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT,
+                Gravity.BOTTOM | Gravity.START);
+        rlp.setMargins(dp(16), 0, 0, dp(30));
+        root.addView(rangeToggle, rlp);
+        fullRange = getSharedPreferences("camera", MODE_PRIVATE).getBoolean("fullRange", false);
+        updateRangeLabel();
+        rangeToggle.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                fullRange = !fullRange;
+                getSharedPreferences("camera", MODE_PRIVATE).edit()
+                        .putBoolean("fullRange", fullRange).apply();
+                updateRangeLabel();
+            }
+        });
+
         worker = new HandlerThread("mtc-camera");
         worker.start();
         cameraHandler = new Handler(worker.getLooper());
@@ -133,6 +160,7 @@ public class CameraActivity extends Activity {
 
             @Override
             public void onSurfaceTextureSizeChanged(SurfaceTexture surface, int width, int height) {
+                configureTransform();
             }
 
             @Override
@@ -175,6 +203,8 @@ public class CameraActivity extends Activity {
             StreamConfigurationMap map =
                     chars.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP);
             stillSize = pickStillSize(map);
+            Integer sensor = chars.get(CameraCharacteristics.SENSOR_ORIENTATION);
+            sensorOrientation = sensor == null ? 90 : sensor.intValue();
             stills = ImageReader.newInstance(stillSize.getWidth(), stillSize.getHeight(),
                     ImageFormat.YUV_420_888, 2);
             stills.setOnImageAvailableListener(new ImageReader.OnImageAvailableListener() {
@@ -184,7 +214,6 @@ public class CameraActivity extends Activity {
                 }
             }, cameraHandler);
 
-            applyPreviewAspect();
             manager.openCamera(cameraId, new CameraDevice.StateCallback() {
                 @Override
                 public void onOpened(CameraDevice camera) {
@@ -256,31 +285,59 @@ public class CameraActivity extends Activity {
         return candidates.get(candidates.size() - 1);
     }
 
-    /** Match the preview window to the sensor aspect so faces are not stretched. */
-    private void applyPreviewAspect() {
-        int vw = root.getWidth();
-        int vh = root.getHeight();
-        if (vw == 0 || vh == 0) {
-            root.post(new Runnable() {
-                @Override
-                public void run() {
-                    applyPreviewAspect();
-                }
-            });
+    /** Clockwise quarter turn that puts a still upright, in degrees. */
+    private int stillRotation() {
+        int display = 0;
+        switch (getWindowManager().getDefaultDisplay().getRotation()) {
+            case Surface.ROTATION_90:
+                display = 90;
+                break;
+            case Surface.ROTATION_180:
+                display = 180;
+                break;
+            case Surface.ROTATION_270:
+                display = 270;
+                break;
+            default:
+                display = 0;
+                break;
+        }
+        // The sensor is mounted at an angle; the display adds to it.
+        return ((sensorOrientation - display) + 360) % 360;
+    }
+
+    /**
+     * Rotate and centre-crop the preview so it is upright and fills the screen.
+     *
+     * <p>The texture is the sensor's landscape buffer; a portrait phone needs a
+     * quarter turn and then a scale that keeps the middle rather than stretching.
+     */
+    private void updateRangeLabel() {
+        rangeToggle.setText(fullRange ? "色彩范围：全 (0-255)" : "色彩范围：有限 (16-235)");
+    }
+
+    private void configureTransform() {
+        if (preview.getWidth() == 0 || preview.getHeight() == 0) {
             return;
         }
-        float target = (float) stillSize.getWidth() / (float) stillSize.getHeight();
-        float view = (float) vw / (float) vh;
-        int w;
-        int h;
-        if (target > view) {
-            w = vw;
-            h = Math.round(vw / target);
-        } else {
-            h = vh;
-            w = Math.round(vh * target);
-        }
-        preview.setLayoutParams(new FrameLayout.LayoutParams(w, h, Gravity.CENTER));
+        int rotation = getWindowManager().getDefaultDisplay().getRotation();
+        float vw = preview.getWidth();
+        float vh = preview.getHeight();
+        android.graphics.RectF viewRect =
+                new android.graphics.RectF(0, 0, vw, vh);
+        // The buffer arrives landscape: width and height swapped.
+        android.graphics.RectF bufferRect = new android.graphics.RectF(
+                0, 0, stillSize.getHeight(), stillSize.getWidth());
+        float cx = viewRect.centerX();
+        float cy = viewRect.centerY();
+        bufferRect.offset(cx - bufferRect.centerX(), cy - bufferRect.centerY());
+        android.graphics.Matrix matrix = new android.graphics.Matrix();
+        matrix.setRectToRect(viewRect, bufferRect,
+                android.graphics.Matrix.ScaleToFit.CENTER);
+        float scale = Math.max(vh / stillSize.getHeight(), vw / stillSize.getWidth());
+        matrix.postScale(scale, scale, cx, cy);
+        matrix.postRotate(90 * (rotation - 2), cx, cy);
+        preview.setTransform(matrix);
     }
 
     private void startPreview() {
@@ -305,6 +362,12 @@ public class CameraActivity extends Activity {
                     session = configured;
                     try {
                         session.setRepeatingRequest(builder.build(), null, cameraHandler);
+                        preview.post(new Runnable() {
+                            @Override
+                            public void run() {
+                                configureTransform();
+                            }
+                        });
                         ui.post(new Runnable() {
                             @Override
                             public void run() {
@@ -385,7 +448,8 @@ public class CameraActivity extends Activity {
             int yStride = planes[0].getRowStride();
             int uvStride = planes[1].getRowStride();
             int uvPixel = planes[1].getPixelStride();
-            blob = Mtc.encodeYuv(y, u, v, w, h, yStride, uvStride, uvPixel, quality);
+            blob = Mtc.encodeYuv(y, u, v, w, h, yStride, uvStride, uvPixel,
+                    quality, fullRange, stillRotation());
         } catch (RuntimeException e) {
             blob = null;
         } finally {
