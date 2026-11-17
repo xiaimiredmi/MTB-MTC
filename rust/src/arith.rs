@@ -178,7 +178,7 @@ mod tests {
 
     #[test]
     fn roundtrip_random_bits() {
-        let mut probs = vec![PROB_INIT; 64];
+        let probs = vec![PROB_INIT; 64];
         let mut src = Enc::new();
         let mut bits = Vec::new();
         let mut seed = 12345u32;

@@ -1,460 +1,351 @@
-//! MTC container for single-plane (gray) images. Colour follows next.
+//! Plane coding: 8x8 DCT, quantisation (optionally adaptive per tile), the
+//! entropy coder and the inverse path.
+//!
+//! A plane is a rectangle of integer samples whose sides are multiples of 8.
+//! Chroma planes are quantised 1.35x harder, the same as the reference encoder.
 
+use crate::aq;
 use crate::arith::{Dec, Enc};
-use crate::entropy::{dec_block, enc_block, new_probs, PER_PLANE};
+use crate::entropy::{dec_block, enc_block, Left, Model};
 use crate::transform::{dct_matrix, fdct, idct, rint, step_table, ZZ};
 
-const MAGIC: &[u8; 4] = b"MTB1";
-const HDR: usize = 12;
+pub const CHROMA_GAIN: f64 = 1.35;
 
-pub struct Gray {
-    pub width: usize,
-    pub height: usize,
-    pub pixels: Vec<u8>,
+#[derive(Clone, Debug)]
+pub struct Plane {
+    pub w: usize,
+    pub h: usize,
+    pub px: Vec<i32>,
 }
 
-fn align(v: usize, m: usize) -> usize {
-    (v + m - 1) / m * m
+#[derive(Clone, Copy, Debug)]
+pub struct Clip {
+    pub lo: i32,
+    pub hi: i32,
 }
 
-pub fn encode_gray(w: usize, h: usize, px: &[u8], quality: u8) -> Vec<u8> {
-    let pw = align(w, 8);
-    let ph = align(h, 8);
-    let m = dct_matrix();
-    let step = step_table(quality);
-    let mut probs = new_probs(1);
-    let mut enc = Enc::new();
-    let hb = ph / 8;
-    let wb = pw / 8;
-    for by in 0..hb {
-        let mut prev = 0i32;
-        for bx in 0..wb {
-            let mut blk = [[0.0f64; 8]; 8];
-            for y in 0..8 {
-                for x in 0..8 {
-                    let sy = (by * 8 + y).min(h - 1);
-                    let sx = (bx * 8 + x).min(w - 1);
-                    blk[x][y] = px[sy * w + sx] as f64;
-                }
-            }
-            let coef = fdct(&blk, &m);
-            let mut qz = [0i32; 64];
-            for k in 0..64 {
-                let (u, v) = ZZ[k];
-                qz[k] = rint(coef[u][v] / step[u][v]) as i32;
-            }
-            enc_block(&mut enc, &mut probs, 1, 0, &qz, prev);
-            prev = qz[0];
+/// Luma is clipped to a byte range after reconstruction, chroma to the range the
+/// reversible YCoCg transform can reach.
+pub fn clip_for_plane(pl: usize) -> Clip {
+    if pl == 0 {
+        Clip { lo: 0, hi: 255 }
+    } else {
+        Clip {
+            lo: -300,
+            hi: 300,
         }
     }
-    let payload = enc.finish();
-    let mut out = Vec::with_capacity(HDR + payload.len());
-    out.extend_from_slice(MAGIC);
-    out.push(1); // version
-    out.push(0); // gray lossy
-    out.push(quality.min(100).max(1));
-    out.push(0); // flags
-    out.extend_from_slice(&(w as u16).to_le_bytes());
-    out.extend_from_slice(&(h as u16).to_le_bytes());
-    out.extend_from_slice(&payload);
-    out
 }
 
-pub fn decode_gray(data: &[u8]) -> Result<Gray, String> {
-    if data.len() < HDR || &data[0..4] != MAGIC {
-        return Err("not an MTC image".into());
-    }
-    let mode = data[5];
-    if mode != 0 {
-        return Err(format!("mode {} is not gray lossy", mode));
-    }
-    let quality = data[6];
-    let w = u16::from_le_bytes([data[8], data[9]]) as usize;
-    let h = u16::from_le_bytes([data[10], data[11]]) as usize;
-    let pw = align(w, 8);
-    let ph = align(h, 8);
-    let m = dct_matrix();
-    let step = step_table(quality);
-    let mut probs = new_probs(1);
-    let mut dec = Dec::new(&data[HDR..]);
-    let mut plane = vec![0u8; pw * ph];
-    for by in 0..ph / 8 {
-        let mut prev = 0i32;
-        for bx in 0..pw / 8 {
-            let qz = dec_block(&mut dec, &mut probs, 1, 0, prev);
-            prev = qz[0];
-            let mut coef = [[0.0f64; 8]; 8];
-            for k in 0..64 {
-                let (u, v) = ZZ[k];
-                coef[u][v] = qz[k] as f64 * step[u][v];
-            }
-            let blk = idct(&coef, &m);
-            for y in 0..8 {
-                for x in 0..8 {
-                    let v = rint(blk[x][y]).clamp(0.0, 255.0) as u8;
-                    plane[(by * 8 + y) * pw + bx * 8 + x] = v;
-                }
+fn plane_step(base: &[[f64; 8]; 8], pl: usize) -> [[f64; 8]; 8] {
+    if pl == 0 {
+        *base
+    } else {
+        let mut s = [[0.0f64; 8]; 8];
+        for u in 0..8 {
+            for v in 0..8 {
+                s[u][v] = base[u][v] * CHROMA_GAIN;
             }
         }
+        s
     }
-    let mut pixels = Vec::with_capacity(w * h);
-    for y in 0..h {
-        pixels.extend_from_slice(&plane[y * pw..y * pw + w]);
+}
+
+/// Half-width of the zero bin, as a fraction of a step: 0.5 is plain
+/// round-to-nearest. Wider bins trade a little peak accuracy for a real rate
+/// win, because a coefficient that quantises to zero costs one cheap symbol and
+/// nothing else. The DC coefficient keeps the neutral value: rounding block
+/// means to zero shifts whole tiles, which costs more than it saves.
+const DEAD_ZONE_AC: f64 = 0.65;
+const DEAD_ZONE_DC: f64 = 0.5;
+
+/// Quantise one coefficient, zeroing everything inside the dead zone.
+#[inline]
+fn quantise(c: f64, step: f64, off: f64) -> i32 {
+    let v = c / step;
+    let a = v.abs();
+    let q = (a + (1.0 - off)).floor();
+    let q = if q < 0.0 { 0.0 } else { q } as i32;
+    if v < 0.0 {
+        -q
+    } else {
+        q
     }
-    Ok(Gray {
-        width: w,
-        height: h,
-        pixels,
-    })
 }
 
-pub struct Rgb {
-    pub width: usize,
-    pub height: usize,
-    pub pixels: Vec<u8>,
-}
-
+/// DC predictor for the context layout: the left coefficient on the first row,
+/// a median edge detector afterwards. Both sides see the same already-decoded
+/// DC values, so the predictor costs nothing in the stream.
 #[inline]
-fn fwd(r: i32, g: i32, b: i32) -> (i32, i32, i32) {
-    let co = r - b;
-    let t = b + (co >> 1);
-    let cg = g - t;
-    (t + (cg >> 1), co, cg)
+fn dc_predict(up: &[i32], cur: &[i32], bx: usize, by: usize) -> i32 {
+    let left = if bx > 0 { cur[bx - 1] } else { 0 };
+    if by == 0 {
+        return left;
+    }
+    let top = up[bx];
+    let tl = if bx > 0 { up[bx - 1] } else { left };
+    let (mx, mn) = if left > top { (left, top) } else { (top, left) };
+    if tl >= mx {
+        mn
+    } else if tl <= mn {
+        mx
+    } else {
+        left + top - tl
+    }
 }
 
-#[inline]
-fn inv(y: i32, co: i32, cg: i32) -> (i32, i32, i32) {
-    let t = y - (cg >> 1);
-    let g = cg + t;
-    let b = t - (co >> 1);
-    (co + b, g, b)
+/// `(dc, ac)` dead-zone widths for this stream.
+fn dead_zones(layout: u8) -> (f64, f64) {
+    if layout != crate::entropy::LAYOUT_CTX {
+        // Version 1 stays a faithful reproduction of the reference encoder.
+        return (0.5, 0.5);
+    }
+    (DEAD_ZONE_DC, DEAD_ZONE_AC)
 }
 
-fn plane_steps(quality: u8) -> [[[f64; 8]; 8]; 3] {
+/// Encode a set of planes into one arithmetic-coded payload.
+pub fn encode_planes(planes: &[Plane], quality: u8, layout: u8, aq_on: bool) -> Vec<u8> {
+    let m = dct_matrix();
     let base = step_table(quality);
-    let mut s = [base; 3];
-    for u in 0..8 {
-        for v in 0..8 {
-            s[1][u][v] = base[u][v] * 1.35;
-            s[2][u][v] = base[u][v] * 1.35;
-        }
-    }
-    s
-}
-
-pub fn encode_rgb444(w: usize, h: usize, rgb: &[u8], quality: u8) -> Vec<u8> {
-    let pw = align(w, 8);
-    let ph = align(h, 8);
-    let mut planes = vec![vec![0i32; pw * ph]; 3];
-    for y in 0..ph {
-        let sy = y.min(h - 1);
-        for x in 0..pw {
-            let sx = x.min(w - 1);
-            let i = (sy * w + sx) * 3;
-            let (yy, co, cg) = fwd(rgb[i] as i32, rgb[i + 1] as i32, rgb[i + 2] as i32);
-            let p = y * pw + x;
-            planes[0][p] = yy;
-            planes[1][p] = co;
-            planes[2][p] = cg;
-        }
-    }
-    let m = dct_matrix();
-    let steps = plane_steps(quality);
-    let mut probs = new_probs(3);
+    let mut model = Model::new(layout, planes.len());
+    let mut aqprobs = aq::new_probs(planes.len());
     let mut enc = Enc::new();
-    for pl in 0..3 {
-        for by in 0..ph / 8 {
+    let (dc_off, ac_off) = dead_zones(layout);
+
+    for (pl, plane) in planes.iter().enumerate() {
+        let steps = aq::level_steps(&plane_step(&base, pl));
+        let pw = plane.w;
+        let blocks_w = plane.w / 8;
+        let blocks_h = plane.h / 8;
+        let tiles_w = (blocks_w + aq::TILE - 1) / aq::TILE;
+        let map = if aq_on {
+            Some(aq::analyse(&plane.px, plane.w, plane.h))
+        } else {
+            None
+        };
+        let mut carry = aq::NEUTRAL as i32;
+        let mut prev_same = false;
+        let mut row_levels = vec![aq::NEUTRAL; tiles_w.max(1)];
+        let mut left = Left::default();
+        let mut up = vec![0i32; blocks_w];
+        let mut cur = vec![0i32; blocks_w];
+        let med = layout == crate::entropy::LAYOUT_CTX;
+
+        for by in 0..blocks_h {
+            if let Some(map) = map.as_ref() {
+                if by % aq::TILE == 0 {
+                    let ty = by / aq::TILE;
+                    for tx in 0..tiles_w {
+                        let target = map.levels[ty * tiles_w + tx] as i32;
+                        let delta = (target - carry).clamp(-3, 3);
+                        let level = (carry + delta).clamp(0, 6) as usize;
+                        row_levels[tx] = level;
+                        aq::enc_level(&mut enc, &mut aqprobs, pl, prev_same, delta);
+                        carry = level as i32;
+                        prev_same = delta == 0;
+                    }
+                }
+            }
             let mut prev = 0i32;
-            for bx in 0..pw / 8 {
+            for bx in 0..blocks_w {
+                let level = if map.is_some() {
+                    row_levels[bx / aq::TILE]
+                } else {
+                    aq::NEUTRAL
+                };
+                let step = &steps[level];
                 let mut blk = [[0.0f64; 8]; 8];
                 for y in 0..8 {
                     for x in 0..8 {
-                        blk[x][y] = planes[pl][(by * 8 + y) * pw + bx * 8 + x] as f64;
+                        blk[y][x] = plane.px[(by * 8 + y) * pw + bx * 8 + x] as f64;
                     }
                 }
                 let coef = fdct(&blk, &m);
                 let mut qz = [0i32; 64];
                 for k in 0..64 {
                     let (u, v) = ZZ[k];
-                    qz[k] = rint(coef[u][v] / steps[pl][u][v]) as i32;
+                    let off = if k == 0 { dc_off } else { ac_off };
+                    qz[k] = quantise(coef[u][v], step[u][v], off);
                 }
-                enc_block(&mut enc, &mut probs, 3, pl, &qz, prev);
-                prev = qz[0];
+                if med {
+                    prev = dc_predict(&up, &cur, bx, by);
+                }
+                enc_block(&mut enc, &mut model, pl, &qz, prev, &left);
+                left = Left::of(&qz);
+                cur[bx] = qz[0];
+                if !med {
+                    prev = qz[0];
+                }
+            }
+            if med {
+                std::mem::swap(&mut up, &mut cur);
             }
         }
     }
-    let payload = enc.finish();
-    let mut out = Vec::with_capacity(HDR + payload.len());
-    out.extend_from_slice(MAGIC);
-    out.push(1);
-    out.push(1); // rgb444 lossy
-    out.push(quality.min(100).max(1));
-    out.push(0);
-    out.extend_from_slice(&(w as u16).to_le_bytes());
-    out.extend_from_slice(&(h as u16).to_le_bytes());
-    out.extend_from_slice(&payload);
-    out
+    enc.finish()
 }
 
-pub fn decode_rgb444(data: &[u8]) -> Result<Rgb, String> {
-    if data.len() < HDR || &data[0..4] != MAGIC {
-        return Err("not an MTC image".into());
-    }
-    if data[5] != 1 {
-        return Err(format!("mode {} is not rgb444 lossy", data[5]));
-    }
-    let quality = data[6];
-    let w = u16::from_le_bytes([data[8], data[9]]) as usize;
-    let h = u16::from_le_bytes([data[10], data[11]]) as usize;
-    let pw = align(w, 8);
-    let ph = align(h, 8);
+/// Inverse of [`encode_planes`]. Shapes are `(width, height)` per plane and must
+/// be the padded sizes, i.e. multiples of 8.
+pub fn decode_planes(
+    payload: &[u8],
+    shapes: &[(usize, usize)],
+    clips: &[Clip],
+    quality: u8,
+    layout: u8,
+    aq_on: bool,
+) -> Vec<Plane> {
     let m = dct_matrix();
-    let steps = plane_steps(quality);
-    let mut probs = new_probs(3);
-    let mut dec = Dec::new(&data[HDR..]);
-    let mut planes = vec![vec![0i32; pw * ph]; 3];
-    for pl in 0..3 {
-        for by in 0..ph / 8 {
+    let base = step_table(quality);
+    let mut model = Model::new(layout, shapes.len());
+    let mut aqprobs = aq::new_probs(shapes.len());
+    let mut dec = Dec::new(payload);
+    let mut out = Vec::with_capacity(shapes.len());
+
+    for (pl, &(pw, ph)) in shapes.iter().enumerate() {
+        let steps = aq::level_steps(&plane_step(&base, pl));
+        let blocks_w = pw / 8;
+        let blocks_h = ph / 8;
+        let tiles_w = (blocks_w + aq::TILE - 1) / aq::TILE;
+        let mut carry = aq::NEUTRAL as i32;
+        let mut prev_same = false;
+        let mut row_levels = vec![aq::NEUTRAL; tiles_w.max(1)];
+        let mut left = Left::default();
+        let mut up = vec![0i32; blocks_w];
+        let mut cur = vec![0i32; blocks_w];
+        let med = layout == crate::entropy::LAYOUT_CTX;
+        let mut plane = vec![0i32; pw * ph];
+        let clip = clips[pl];
+
+        for by in 0..blocks_h {
+            if aq_on && by % aq::TILE == 0 {
+                for tx in 0..tiles_w {
+                    let delta = aq::dec_level(&mut dec, &mut aqprobs, pl, prev_same);
+                    let level = (carry + delta).clamp(0, 6) as usize;
+                    row_levels[tx] = level;
+                    carry = level as i32;
+                    prev_same = delta == 0;
+                }
+            }
             let mut prev = 0i32;
-            for bx in 0..pw / 8 {
-                let qz = dec_block(&mut dec, &mut probs, 3, pl, prev);
-                prev = qz[0];
+            for bx in 0..blocks_w {
+                let level = if aq_on {
+                    row_levels[bx / aq::TILE]
+                } else {
+                    aq::NEUTRAL
+                };
+                let step = &steps[level];
+                if med {
+                    prev = dc_predict(&up, &cur, bx, by);
+                }
+                let qz = dec_block(&mut dec, &mut model, pl, prev, &left);
+                left = Left::of(&qz);
+                cur[bx] = qz[0];
+                if !med {
+                    prev = qz[0];
+                }
                 let mut coef = [[0.0f64; 8]; 8];
                 for k in 0..64 {
                     let (u, v) = ZZ[k];
-                    coef[u][v] = qz[k] as f64 * steps[pl][u][v];
+                    coef[u][v] = qz[k] as f64 * step[u][v];
                 }
                 let blk = idct(&coef, &m);
                 for y in 0..8 {
                     for x in 0..8 {
-                        planes[pl][(by * 8 + y) * pw + bx * 8 + x] =
-                            rint(blk[x][y]) as i32;
+                        let v = (rint(blk[y][x]) as i32).clamp(clip.lo, clip.hi);
+                        plane[(by * 8 + y) * pw + bx * 8 + x] = v;
                     }
                 }
             }
-        }
-    }
-    let mut pixels = vec![0u8; w * h * 3];
-    for y in 0..h {
-        for x in 0..w {
-            let p = y * pw + x;
-            let (r, g, b) = inv(
-                planes[0][p].clamp(0, 255),
-                planes[1][p].clamp(-300, 300),
-                planes[2][p].clamp(-300, 300),
-            );
-            let o = (y * w + x) * 3;
-            pixels[o] = r.clamp(0, 255) as u8;
-            pixels[o + 1] = g.clamp(0, 255) as u8;
-            pixels[o + 2] = b.clamp(0, 255) as u8;
-        }
-    }
-    Ok(Rgb {
-        width: w,
-        height: h,
-        pixels,
-    })
-}
-
-fn enc_plane(
-    enc: &mut Enc,
-    probs: &mut [i16],
-    planes: usize,
-    pl: usize,
-    plane: &[i32],
-    pw: usize,
-    ph: usize,
-    step: &[[f64; 8]; 8],
-) {
-    let m = dct_matrix();
-    for by in 0..ph / 8 {
-        let mut prev = 0i32;
-        for bx in 0..pw / 8 {
-            let mut blk = [[0.0f64; 8]; 8];
-            for y in 0..8 {
-                for x in 0..8 {
-                    blk[x][y] = plane[(by * 8 + y) * pw + bx * 8 + x] as f64;
-                }
-            }
-            let coef = fdct(&blk, &m);
-            let mut qz = [0i32; 64];
-            for k in 0..64 {
-                let (u, v) = ZZ[k];
-                qz[k] = rint(coef[u][v] / step[u][v]) as i32;
-            }
-            enc_block(enc, probs, planes, pl, &qz, prev);
-            prev = qz[0];
-        }
-    }
-}
-
-fn dec_plane(
-    dec: &mut Dec,
-    probs: &mut [i16],
-    planes: usize,
-    pl: usize,
-    pw: usize,
-    ph: usize,
-    step: &[[f64; 8]; 8],
-) -> Vec<i32> {
-    let m = dct_matrix();
-    let mut plane = vec![0i32; pw * ph];
-    for by in 0..ph / 8 {
-        let mut prev = 0i32;
-        for bx in 0..pw / 8 {
-            let qz = dec_block(dec, probs, planes, pl, prev);
-            prev = qz[0];
-            let mut coef = [[0.0f64; 8]; 8];
-            for k in 0..64 {
-                let (u, v) = ZZ[k];
-                coef[u][v] = qz[k] as f64 * step[u][v];
-            }
-            let blk = idct(&coef, &m);
-            for y in 0..8 {
-                for x in 0..8 {
-                    plane[(by * 8 + y) * pw + bx * 8 + x] = rint(blk[x][y]) as i32;
-                }
+            if med {
+                std::mem::swap(&mut up, &mut cur);
             }
         }
+        out.push(Plane { w: pw, h: ph, px: plane });
     }
-    plane
-}
-
-pub fn encode_rgb420(w: usize, h: usize, rgb: &[u8], quality: u8) -> Vec<u8> {
-    let pw = align(w, 16);
-    let ph = align(h, 16);
-    let cw = pw / 2;
-    let ch = ph / 2;
-    let mut y = vec![0i32; pw * ph];
-    let mut co = vec![0i32; cw * ch];
-    let mut cg = vec![0i32; cw * ch];
-    for yy in 0..ph {
-        let sy = yy.min(h - 1);
-        for xx in 0..pw {
-            let sx = xx.min(w - 1);
-            let i = (sy * w + sx) * 3;
-            let (a, b, c) = fwd(rgb[i] as i32, rgb[i + 1] as i32, rgb[i + 2] as i32);
-            y[yy * pw + xx] = a;
-            let p = (yy / 2) * cw + xx / 2;
-            co[p] += b;
-            cg[p] += c;
-        }
-    }
-    for p in 0..cw * ch {
-        co[p] >>= 2;
-        cg[p] >>= 2;
-    }
-    let steps = plane_steps(quality);
-    let mut probs = new_probs(3);
-    let mut enc = Enc::new();
-    enc_plane(&mut enc, &mut probs, 3, 0, &y, pw, ph, &steps[0]);
-    enc_plane(&mut enc, &mut probs, 3, 1, &co, cw, ch, &steps[1]);
-    enc_plane(&mut enc, &mut probs, 3, 2, &cg, cw, ch, &steps[2]);
-    let payload = enc.finish();
-    let mut out = Vec::with_capacity(HDR + payload.len());
-    out.extend_from_slice(MAGIC);
-    out.push(1);
-    out.push(2); // rgb420 lossy
-    out.push(quality.min(100).max(1));
-    out.push(0);
-    out.extend_from_slice(&(w as u16).to_le_bytes());
-    out.extend_from_slice(&(h as u16).to_le_bytes());
-    out.extend_from_slice(&payload);
     out
-}
-
-pub fn decode_rgb420(data: &[u8]) -> Result<Rgb, String> {
-    if data.len() < HDR || &data[0..4] != MAGIC {
-        return Err("not an MTC image".into());
-    }
-    if data[5] != 2 {
-        return Err(format!("mode {} is not rgb420 lossy", data[5]));
-    }
-    let quality = data[6];
-    let w = u16::from_le_bytes([data[8], data[9]]) as usize;
-    let h = u16::from_le_bytes([data[10], data[11]]) as usize;
-    let pw = align(w, 16);
-    let ph = align(h, 16);
-    let cw = pw / 2;
-    let ch = ph / 2;
-    let steps = plane_steps(quality);
-    let mut probs = new_probs(3);
-    let mut dec = Dec::new(&data[HDR..]);
-    let y = dec_plane(&mut dec, &mut probs, 3, 0, pw, ph, &steps[0]);
-    let co = dec_plane(&mut dec, &mut probs, 3, 1, cw, ch, &steps[1]);
-    let cg = dec_plane(&mut dec, &mut probs, 3, 2, cw, ch, &steps[2]);
-    let mut pixels = vec![0u8; w * h * 3];
-    for yy in 0..h {
-        for xx in 0..w {
-            let p = yy * pw + xx;
-            let c = (yy / 2) * cw + xx / 2;
-            let (r, g, b) = inv(
-                y[p].clamp(0, 255),
-                co[c].clamp(-300, 300),
-                cg[c].clamp(-300, 300),
-            );
-            let o = (yy * w + xx) * 3;
-            pixels[o] = r.clamp(0, 255) as u8;
-            pixels[o + 1] = g.clamp(0, 255) as u8;
-            pixels[o + 2] = b.clamp(0, 255) as u8;
-        }
-    }
-    Ok(Rgb {
-        width: w,
-        height: h,
-        pixels,
-    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::entropy::{LAYOUT_CTX, LAYOUT_FLAT};
 
-    #[test]
-    fn rgb_roundtrip() {
-        let (w, h) = (32usize, 24usize);
-        let mut px = vec![0u8; w * h * 3];
+    fn ramp_plane(w: usize, h: usize, seed: u32) -> Plane {
+        let mut px = vec![0i32; w * h];
+        let mut s = seed.wrapping_mul(2654435761);
         for y in 0..h {
             for x in 0..w {
-                let o = (y * w + x) * 3;
-                px[o] = (x * 8) as u8;
-                px[o + 1] = (y * 10) as u8;
-                px[o + 2] = ((x + y) * 5) as u8;
+                s = s.wrapping_mul(1664525).wrapping_add(1013904223);
+                let noise = ((s >> 28) as i32) - 8;
+                px[y * w + x] = (40 + ((x * 2 + y * 3) % 96) as i32 + noise).clamp(0, 255);
             }
         }
-        let blob = encode_rgb444(w, h, &px, 85);
-        let got = decode_rgb444(&blob).unwrap();
+        Plane { w, h, px }
+    }
+
+    fn psnr(a: &Plane, b: &Plane) -> f64 {
         let mut se = 0f64;
-        for (a, b) in px.iter().zip(got.pixels.iter()) {
-            let d = *a as f64 - *b as f64;
+        for (p, q) in a.px.iter().zip(b.px.iter()) {
+            let d = (*p - *q) as f64;
             se += d * d;
         }
-        let mse = se / (w * h * 3) as f64;
-        let psnr = 10.0 * (255.0 * 255.0 / mse).log10();
-        assert!(psnr > 25.0, "psnr {:.2}", psnr);
+        let mse = se / a.px.len() as f64;
+        10.0 * (255.0 * 255.0 / mse.max(1e-9)).log10()
+    }
+
+    fn roundtrip(layout: u8, aq_on: bool, quality: u8) -> (Vec<u8>, f64) {
+        let planes = vec![ramp_plane(64, 48, 3), ramp_plane(32, 24, 9)];
+        let payload = encode_planes(&planes, quality, layout, aq_on);
+        let shapes: Vec<(usize, usize)> = planes.iter().map(|p| (p.w, p.h)).collect();
+        let clips: Vec<Clip> = (0..planes.len()).map(clip_for_plane).collect();
+        let back = decode_planes(&payload, &shapes, &clips, quality, layout, aq_on);
+        assert_eq!(back.len(), planes.len());
+        (payload, psnr(&planes[0], &back[0]))
     }
 
     #[test]
-    fn gray_roundtrip() {
-        let (w, h) = (64usize, 48usize);
-        let mut px = vec![0u8; w * h];
-        for y in 0..h {
-            for x in 0..w {
-                px[y * w + x] = ((x * 3 + y * 5) % 256) as u8;
-            }
+    fn flat_layout_roundtrip() {
+        let (payload, p) = roundtrip(LAYOUT_FLAT, false, 85);
+        assert!(p > 30.0, "psnr {:.2} bytes {}", p, payload.len());
+    }
+
+    #[test]
+    fn ctx_layout_roundtrip() {
+        let (payload, p) = roundtrip(LAYOUT_CTX, false, 85);
+        assert!(p > 30.0, "psnr {:.2} bytes {}", p, payload.len());
+    }
+
+    #[test]
+    fn ctx_layout_with_aq_roundtrip() {
+        for q in [40u8, 70, 85, 95] {
+            let (payload, p) = roundtrip(LAYOUT_CTX, true, q);
+            assert!(p > 25.0, "q{} psnr {:.2} bytes {}", q, p, payload.len());
         }
-        let blob = encode_gray(w, h, &px, 85);
-        let got = decode_gray(&blob).unwrap();
-        assert_eq!((got.width, got.height), (w, h));
-        let mut se = 0f64;
-        for (a, b) in px.iter().zip(got.pixels.iter()) {
-            let d = *a as f64 - *b as f64;
-            se += d * d;
-        }
-        let mse = se / (w * h) as f64;
-        let psnr = 10.0 * (255.0 * 255.0 / mse).log10();
-        assert!(psnr > 30.0, "psnr {:.2}", psnr);
-        assert!(blob.len() > HDR);
-        let _ = PER_PLANE;
+    }
+
+    #[test]
+    fn quality_controls_size() {
+        let (small, _) = roundtrip(LAYOUT_CTX, false, 40);
+        let (big, _) = roundtrip(LAYOUT_CTX, false, 95);
+        assert!(big.len() > small.len());
+    }
+
+    #[test]
+    fn flat_plane_is_unchanged_by_aq() {
+        let planes = vec![Plane {
+            w: 32,
+            h: 32,
+            px: vec![120i32; 32 * 32],
+        }];
+        let shapes = vec![(32usize, 32usize)];
+        let clips = vec![clip_for_plane(0)];
+        let off = encode_planes(&planes, 80, LAYOUT_CTX, false);
+        let on = encode_planes(&planes, 80, LAYOUT_CTX, true);
+        let a = decode_planes(&off, &shapes, &clips, 80, LAYOUT_CTX, false);
+        let b = decode_planes(&on, &shapes, &clips, 80, LAYOUT_CTX, true);
+        assert_eq!(a[0].px, b[0].px);
+        // A neutral tile row still costs a few level symbols.
+        assert!(on.len() >= off.len());
     }
 }
