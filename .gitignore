@@ -5,6 +5,14 @@ rust/bench/data/
 # the local binary folder at the repository root only
 /bin/
 
+# --- Android ---
+# the .so files come out of cargo-ndk during every build
+android/app/src/main/jniLibs/
+android/jni/target/
+android/build/
+android/*.apk
+android/*.idsig
+
 # --- editor / OS ---
 .vscode/
 .idea/

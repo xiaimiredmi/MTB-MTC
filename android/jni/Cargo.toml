@@ -1,0 +1,18 @@
+[package]
+name = "mtcjni"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "mtcjni"
+crate-type = ["cdylib"]
+
+[dependencies]
+mtc = { path = "../../rust" }
+jni = "0.21"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = "symbols"
