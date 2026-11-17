@@ -9,6 +9,7 @@
 //! mtc::codec      8x8 DCT planes, quantisation, reconstruction
 //! mtc::entropy    coefficient block coder and its two probability layouts
 //! mtc::aq         adaptive quantisation, one multiplier per 16x16 tile
+//! mtc::lossless   spatial prediction for the exact paths and for alpha
 //! mtc::arith      binary arithmetic coder
 //! mtc::transform  DCT matrix, zig-zag scan, quantiser table
 //! ```
@@ -19,4 +20,5 @@ pub mod codec;
 pub mod container;
 pub mod entropy;
 pub mod imgio;
+pub mod lossless;
 pub mod transform;

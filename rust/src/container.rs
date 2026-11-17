@@ -18,6 +18,7 @@
 
 use crate::codec::{self, clip_for_plane, Plane};
 use crate::entropy::{LAYOUT_CTX, LAYOUT_FLAT};
+use crate::lossless;
 
 pub const MAGIC: &[u8; 4] = b"MTB1";
 pub const HDR: usize = 12;
@@ -212,6 +213,8 @@ pub struct Options {
     pub subsample_420: bool,
     pub aq: AqMode,
     pub version: u8,
+    /// Spatial prediction instead of the DCT, pixel-exact (modes 3 and 4).
+    pub lossless: bool,
 }
 
 impl Default for Options {
@@ -223,6 +226,7 @@ impl Default for Options {
             // back at matched PSNR, so it is opt-in rather than the default.
             aq: AqMode::Off,
             version: VERSION,
+            lossless: false,
         }
     }
 }
@@ -293,16 +297,6 @@ fn shapes_for(h: &Header) -> Vec<(usize, usize)> {
     }
 }
 
-fn alpha_png(w: usize, h: usize, alpha: &[u8]) -> Result<Vec<u8>, String> {
-    let buf = image::GrayImage::from_raw(w as u32, h as u32, alpha.to_vec())
-        .ok_or_else(|| "bad alpha buffer".to_string())?;
-    let mut out = Vec::new();
-    image::DynamicImage::ImageLuma8(buf)
-        .write_to(&mut std::io::Cursor::new(&mut out), image::ImageFormat::Png)
-        .map_err(|e| e.to_string())?;
-    Ok(out)
-}
-
 fn read_alpha_png(bytes: &[u8], w: usize, h: usize) -> Result<Vec<u8>, String> {
     let img = image::load_from_memory_with_format(bytes, image::ImageFormat::Png)
         .map_err(|e| format!("alpha channel is not a PNG ({})", e))?;
@@ -324,6 +318,10 @@ pub fn encode(img: &Image, opts: &Options) -> Result<Vec<u8>, String> {
     let quality = opts.quality.clamp(1, 100);
     let mut opts = *opts;
     opts.quality = quality;
+    if opts.lossless {
+        // No quantiser, so adaptive quantisation has nothing to scale.
+        return assemble(img, &opts, false);
+    }
     match opts.aq {
         AqMode::Off => assemble(img, &opts, false),
         AqMode::On => assemble(img, &opts, true),
@@ -372,7 +370,42 @@ fn assemble(img: &Image, opts: &Options, aq_on: bool) -> Result<Vec<u8>, String>
     };
 
     let solid = if img.channels == 1 { 1 } else { 3 };
-    let (md, payload) = if solid == 1 {
+    let (md, payload) = if opts.lossless {
+        // No padding and no quantiser: planes are coded at their real size.
+        let planes = if solid == 1 {
+            let px = rgb.iter().map(|v| *v as i32).collect::<Vec<i32>>();
+            vec![Plane { w, h, px }]
+        } else {
+            let mut y_plane = vec![0i32; w * h];
+            let mut co = vec![0i32; w * h];
+            let mut cg = vec![0i32; w * h];
+            for p in 0..w * h {
+                let (yy, co_v, cg_v) = fwd(
+                    rgb[p * 3] as i32,
+                    rgb[p * 3 + 1] as i32,
+                    rgb[p * 3 + 2] as i32,
+                );
+                y_plane[p] = yy;
+                co[p] = co_v;
+                cg[p] = cg_v;
+            }
+            vec![
+                Plane {
+                    w,
+                    h,
+                    px: y_plane,
+                },
+                Plane { w, h, px: co },
+                Plane { w, h, px: cg },
+            ]
+        };
+        let md = if solid == 1 {
+            mode::GRAY_LOSSLESS
+        } else {
+            mode::RGB_LOSSLESS
+        };
+        (md, lossless::encode_planes(&planes))
+    } else if solid == 1 {
         let pw = align(w, 8);
         let ph = align(h, 8);
         let mut px = vec![0i32; pw * ph];
@@ -457,20 +490,18 @@ fn assemble(img: &Image, opts: &Options, aq_on: bool) -> Result<Vec<u8>, String>
     };
 
     let mut flags = 0u8;
-    if aq_on {
+    if aq_on && !opts.lossless {
         flags |= FLAG_AQ;
     }
     let alpha_blob = match alpha {
         Some(a) => {
-            if opts.version == VERSION_LEGACY {
-                return Err(
-                    "version 1 stores alpha with the Python residual coder; write version 2 to \
-                     keep an alpha channel"
-                        .into(),
-                );
-            }
             flags |= FLAG_ALPHA;
-            Some(alpha_png(w, h, &a)?)
+            let plane = Plane {
+                w,
+                h,
+                px: a.iter().map(|v| *v as i32).collect(),
+            };
+            Some(lossless::encode_planes(std::slice::from_ref(&plane)))
         }
         None => None,
     };
@@ -505,17 +536,32 @@ pub fn decode(data: &[u8]) -> Result<Image, String> {
             return Err("truncated alpha payload".into());
         }
         let blob = &data[HDR + 4..HDR + 4 + len];
-        if h.version == VERSION_LEGACY {
-            return Err(
-                "this file stores alpha with the Python residual coder, which the Rust decoder \
-                 does not implement yet"
-                    .into(),
-            );
-        }
-        alpha = Some(read_alpha_png(blob, h.width, h.height)?);
+        alpha = Some(decode_alpha(blob, h.width, h.height)?);
         offset = HDR + 4 + len;
     }
     let payload = &data[offset..];
+    if h.mode == mode::GRAY_LOSSLESS || h.mode == mode::RGB_LOSSLESS {
+        let n = if h.mode == mode::GRAY_LOSSLESS { 1 } else { 3 };
+        let shapes = vec![(h.width, h.height); n];
+        let clips: Vec<_> = (0..n).map(clip_for_plane).collect();
+        let planes = lossless::decode_planes(payload, &shapes, &clips);
+        let w = h.width;
+        let hh = h.height;
+        let mut solid: Vec<u8> = Vec::with_capacity(w * hh * n);
+        if n == 1 {
+            for p in planes[0].px.iter() {
+                solid.push((*p).clamp(0, 255) as u8);
+            }
+        } else {
+            for i in 0..w * hh {
+                let (r, g, b) = inv(planes[0].px[i], planes[1].px[i], planes[2].px[i]);
+                solid.push(r.clamp(0, 255) as u8);
+                solid.push(g.clamp(0, 255) as u8);
+                solid.push(b.clamp(0, 255) as u8);
+            }
+        }
+        return attach_alpha(solid, alpha, w, hh, n);
+    }
     let shapes = shapes_for(&h);
     let clips: Vec<_> = (0..shapes.len()).map(clip_for_plane).collect();
     let planes = codec::decode_planes(
@@ -571,16 +617,28 @@ pub fn decode(data: &[u8]) -> Result<Image, String> {
             channels = 3;
         }
         mode::GRAY_LOSSLESS | mode::RGB_LOSSLESS => {
-            return Err("lossless mode is not implemented in the Rust codec yet".into());
+            // Handled before the lossy plane loop above.
+            return Err("lossless mode reached the lossy path".into());
         }
         other => return Err(format!("unknown mode {}", other)),
     }
 
+    attach_alpha(solid, alpha, w, hh, channels)
+}
+
+/// Append the alpha channel, if the file carried one.
+fn attach_alpha(
+    solid: Vec<u8>,
+    alpha: Option<Vec<u8>>,
+    w: usize,
+    h: usize,
+    channels: usize,
+) -> Result<Image, String> {
     let has_alpha = alpha.is_some();
     let data = match alpha {
         Some(a) => {
-            let mut out = Vec::with_capacity(w * hh * 4);
-            for i in 0..w * hh {
+            let mut out = Vec::with_capacity(w * h * 4);
+            for i in 0..w * h {
                 if channels == 1 {
                     let v = solid[i];
                     out.extend_from_slice(&[v, v, v]);
@@ -594,7 +652,17 @@ pub fn decode(data: &[u8]) -> Result<Image, String> {
         None => solid,
     };
     let channels = if has_alpha { 4 } else { channels };
-    Image::new(w, hh, channels, data)
+    Image::new(w, h, channels, data)
+}
+
+/// The alpha segment: the lossless residual coder, or a PNG for the early
+/// version 2 files that stored it that way.
+fn decode_alpha(blob: &[u8], w: usize, h: usize) -> Result<Vec<u8>, String> {
+    if blob.starts_with(b"\x89PNG") {
+        return read_alpha_png(blob, w, h);
+    }
+    let planes = lossless::decode_planes(blob, &[(w, h)], &[clip_for_plane(0)]);
+    Ok(planes[0].px.iter().map(|v| (*v).clamp(0, 255) as u8).collect())
 }
 
 #[cfg(test)]
@@ -672,22 +740,33 @@ mod tests {
     }
 
     #[test]
-    fn version1_cannot_carry_alpha() {
-        let mut px = Vec::with_capacity(8 * 8 * 4);
-        for _ in 0..8 * 8 {
-            px.extend_from_slice(&[10, 20, 30, 200]);
+    fn both_versions_carry_alpha_exactly() {
+        let (w, h) = (24usize, 16usize);
+        let mut px = Vec::with_capacity(w * h * 4);
+        for y in 0..h {
+            for x in 0..w {
+                px.push((x * 9) as u8);
+                px.push((y * 13) as u8);
+                px.push(200);
+                px.push(((x * 17 + y * 5) % 256) as u8);
+            }
         }
-        let img = Image::new(8, 8, 4, px).unwrap();
-        let err = encode(
-            &img,
-            &Options {
-                version: VERSION_LEGACY,
-                aq: AqMode::Off,
-                ..Options::default()
-            },
-        )
-        .unwrap_err();
-        assert!(err.contains("version 1"), "{}", err);
+        let img = Image::new(w, h, 4, px).unwrap();
+        for version in [VERSION, VERSION_LEGACY] {
+            let blob = encode(
+                &img,
+                &Options {
+                    version,
+                    ..Options::default()
+                },
+            )
+            .unwrap();
+            let back = decode(&blob).unwrap();
+            assert_eq!(back.channels, 4, "version {}", version);
+            for i in 0..w * h {
+                assert_eq!(back.data[i * 4 + 3], img.data[i * 4 + 3], "alpha {}", i);
+            }
+        }
     }
 
     #[test]

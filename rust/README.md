@@ -13,18 +13,21 @@ cargo build --release --features viewer    # + mtview, the egui viewer
 
 The binaries are `target/release/mtcodec.exe`, `mtbench.exe` and `mtview.exe`.
 
-## Install on PATH
+## Install
 
-`D:\MTB-MTC\bin` is on the user `Path` and sits ahead of the Python entry
-points, so the bare names resolve to these builds:
+`D:\MTB-MTC\bin` is on the user `Path` and holds the three binaries, so the bare
+names resolve to these builds:
 
 ```powershell
 copy target\release\mtcodec.exe,target\release\mtbench.exe,target\release\mtview.exe ..\bin\
-mtcodec info photo.mtc        # the Rust one, not D:\Python\Scripts\mtcodec.exe
+powershell -ExecutionPolicy Bypass -File ..\deploy\register.ps1
+mtcodec info photo.mtc
 ```
 
-`python -m mtcodec ...` still runs the Python package, because that path never
-looks at `Path`.
+`deploy\register.ps1` registers `.mtc` to open with `mtview`, points the icon at
+`deploy\mtc.ico`, clears the old video-container registrations, puts `bin\` first
+on the user `Path` and tells Explorer the environment changed. It is per-user
+(`HKCU`), needs no administrator, and `-Unregister` undoes all of it.
 
 ## Commands
 
@@ -32,6 +35,7 @@ looks at `Path`.
 mtcodec encode photo.png photo.mtc -q 85      # 4:2:0, alpha kept if present
 mtcodec encode photo.png photo.mtc -q 85 -s 444
 mtcodec encode photo.png photo.mtc -q 85 --aq on
+mtcodec encode scan.png scan.mtc --lossless    # spatial prediction, exact
 mtcodec encode photo.png photo.mtc --v1       # legacy version 1 stream
 mtcodec decode photo.mtc out.png              # format from the output extension
 mtcodec info photo.mtc
@@ -57,7 +61,9 @@ higher and looks better than it is.
   detector, so smooth pictures stop paying for a per-block brightness value.
 - Adaptive binary arithmetic coding over zig-zag coefficients, with the
   previous block's sparsity conditioning the `last` symbol.
-- Exact alpha, carried as a lossless PNG blob next to the lossy RGB payload.
+- Lossless mode (spatial prediction instead of the DCT), pixel-exact.
+- Exact alpha, coded with the lossless path, so lossy RGB can carry lossless
+  alpha.
 - Version 1 streams written by the Python encoder decode bit-exactly; there is
   a fixture test for it.
 
@@ -131,7 +137,7 @@ the window and prints `viewer ok`, `MTCODEC_VIEWER_ZOOM` opens at a fixed zoom.
 ## Tests
 
 ```powershell
-cargo test                                  # 28 unit + 2 compatibility tests
+cargo test                                  # 32 unit + 5 compatibility tests
 cargo test --release --features viewer      # + 9 viewer geometry tests
 ```
 
@@ -143,7 +149,9 @@ still round-tripping against itself.
 
 ## Status
 
-- lossy gray / RGB 4:4:4 / RGB 4:2:0, exact alpha (stored as a PNG blob)
+- lossy gray / RGB 4:4:4 / RGB 4:2:0, exact alpha
+- lossless gray / RGB, pixel-exact, verified against the reference encoder both
+  ways (identical bytes for the same input)
 - version 1 and version 2 streams both decode; version 2 is what we write
-- lossless mode, the arithmetic-coded alpha coder and removing the Python
-  package are still pending
+- the Python implementation is gone; `tests/data/` keeps three of its files as
+  fixtures so the legacy streams stay decodable

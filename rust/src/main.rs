@@ -13,7 +13,7 @@ fn usage() -> ExitCode {
     eprintln!();
     eprintln!("usage:");
     eprintln!("  mtcodec info <file.mtc>");
-    eprintln!("  mtcodec encode <in.png> <out.mtc> [-q 1..100] [-s 420|444]");
+    eprintln!("  mtcodec encode <in.png> <out.mtc> [-q 1..100] [-s 420|444] [--lossless]");
     eprintln!("                 [--aq off|on|auto] [--v1]");
     eprintln!("  mtcodec decode <in.mtc> <out.png>");
     eprintln!();
@@ -21,6 +21,7 @@ fn usage() -> ExitCode {
     eprintln!("  -s     chroma subsampling for colour (default 420)");
     eprintln!("  --aq   adaptive quantisation: off (default), on, or auto");
     eprintln!("  --v1   write the legacy version 1 stream");
+    eprintln!("  --lossless  spatial prediction, pixel-exact (modes 3 and 4)");
     ExitCode::from(2)
 }
 
@@ -65,6 +66,11 @@ fn cmd_encode(args: &[String]) -> Result<(), String> {
             "--aq" if i + 1 < args.len() => {
                 opts.aq = AqMode::parse(&args[i + 1])?;
                 i += 2;
+            }
+            "--lossless" => {
+                opts.lossless = true;
+                opts.aq = AqMode::Off;
+                i += 1;
             }
             "--v1" => {
                 opts.version = VERSION_LEGACY;

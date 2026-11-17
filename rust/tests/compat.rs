@@ -35,6 +35,61 @@ fn decodes_a_python_written_v1_stream() {
 }
 
 #[test]
+fn decodes_a_python_written_lossless_stream() {
+    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/data/legacy_v1_lossless.mtc");
+    let data = std::fs::read(path).expect("fixture");
+    let head = probe(&data).expect("header");
+    assert_eq!(head.version, 1);
+    assert_eq!(head.mode, container::mode::RGB_LOSSLESS);
+    assert_eq!((head.width, head.height), (64, 48));
+
+    let img = container::decode(&data).expect("decode");
+    assert_eq!(fnv1a64(&img.data), 0x6bfe_3ae8_b2c4_4a19);
+}
+
+#[test]
+fn decodes_a_python_written_alpha_stream() {
+    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/data/legacy_v1_alpha.mtc");
+    let data = std::fs::read(path).expect("fixture");
+    let head = probe(&data).expect("header");
+    assert_eq!(head.mode, container::mode::RGB420_LOSSY);
+    assert!(head.has_alpha());
+
+    let img = container::decode(&data).expect("decode");
+    assert_eq!(img.channels, 4);
+    assert_eq!(fnv1a64(&img.data), 0x5132_2c9a_721a_7b61);
+}
+
+#[test]
+fn lossless_round_trip_is_pixel_exact() {
+    let (w, h) = (48usize, 40usize);
+    let mut px = Vec::with_capacity(w * h * 3);
+    for y in 0..h {
+        for x in 0..w {
+            px.push(((x * 5 + y * 3) % 256) as u8);
+            px.push(((x * 11 + y) % 256) as u8);
+            px.push(((x + y * 13) % 256) as u8);
+        }
+    }
+    let img = mtc::container::Image::new(w, h, 3, px).unwrap();
+    for version in [container::VERSION, container::VERSION_LEGACY] {
+        let blob = container::encode(
+            &img,
+            &container::Options {
+                lossless: true,
+                version,
+                ..container::Options::default()
+            },
+        )
+        .unwrap();
+        let head = probe(&blob).unwrap();
+        assert_eq!(head.mode, container::mode::RGB_LOSSLESS);
+        let back = container::decode(&blob).unwrap();
+        assert_eq!(back.data, img.data, "version {}", version);
+    }
+}
+
+#[test]
 fn v2_round_trip_reports_the_new_stream() {
     let (w, h) = (64usize, 48usize);
     let mut px = Vec::with_capacity(w * h * 3);

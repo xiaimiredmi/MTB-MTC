@@ -113,6 +113,82 @@ impl Model {
     }
 }
 
+/// Residual model for the lossless paths: per plane, five activity classes, each
+/// with its own magnitude-class tree, sign probability and magnitude-bit
+/// probabilities. The indices are private to this crate; only encoder and
+/// decoder agreeing matters.
+pub struct ResidualModel {
+    probs: Vec<i16>,
+}
+
+/// Slots per plane: 5 class trees of 16 nodes, 5 signs, 5 sets of 16 bits.
+const RES_PLANE: usize = 165;
+
+impl ResidualModel {
+    pub fn new(planes: usize) -> ResidualModel {
+        ResidualModel {
+            probs: vec![PROB_INIT; planes * RES_PLANE],
+        }
+    }
+
+    #[inline]
+    fn class_base(&self, pl: usize, ctx: usize) -> usize {
+        pl * RES_PLANE + ctx.min(4) * 16
+    }
+
+    #[inline]
+    fn sign_base(&self, pl: usize, ctx: usize) -> usize {
+        pl * RES_PLANE + 80 + ctx.min(4)
+    }
+
+    #[inline]
+    fn extra_base(&self, pl: usize, ctx: usize) -> usize {
+        pl * RES_PLANE + 85 + ctx.min(4) * 16
+    }
+
+    pub fn enc_res(&mut self, e: &mut Enc, pl: usize, ctx: usize, value: i32) {
+        let class = self.class_base(pl, ctx);
+        let sign = self.sign_base(pl, ctx);
+        let extra = self.extra_base(pl, ctx);
+        let probs = &mut self.probs[..];
+        let mut v = value;
+        let mut sg = 0u32;
+        if v < 0 {
+            v = -v;
+            sg = 1;
+        }
+        let c = bit_len(v);
+        enc_tree(e, probs, class, 4, c as i32);
+        if c > 0 {
+            e.bit(probs, sign, sg);
+            if c > 1 {
+                enc_bits(e, probs, extra, c - 1, v - (1 << (c - 1)));
+            }
+        }
+    }
+
+    pub fn dec_res(&mut self, d: &mut Dec, pl: usize, ctx: usize) -> i32 {
+        let class = self.class_base(pl, ctx);
+        let sign = self.sign_base(pl, ctx);
+        let extra = self.extra_base(pl, ctx);
+        let probs = &mut self.probs[..];
+        let c = dec_tree(d, probs, class, 4);
+        if c == 0 {
+            return 0;
+        }
+        let sg = d.bit(probs, sign);
+        let mut v = 1i32 << (c - 1);
+        if c > 1 {
+            v += dec_bits(d, probs, extra, c - 1) as i32;
+        }
+        if sg != 0 {
+            -v
+        } else {
+            v
+        }
+    }
+}
+
 /// Context for the `last` symbol, from the previous block's `last`.
 #[inline]
 fn last_ctx(layout: u8, left: &Left) -> usize {
