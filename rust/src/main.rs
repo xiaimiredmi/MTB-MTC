@@ -15,7 +15,7 @@ fn usage() -> ExitCode {
     eprintln!("  mtcodec info <file.mtc>");
     eprintln!("  mtcodec encode <in.png> <out.mtc> [-q 1..100] [-s 420|444] [--lossless]");
     eprintln!("                 [--aq off|on|auto] [--v1]");
-    eprintln!("  mtcodec decode <in.mtc> <out.png>");
+    eprintln!("  mtcodec decode <in.mtc> <out.png> [--max-side N]");
     eprintln!();
     eprintln!("  -q     quality, higher is bigger and closer (default 85)");
     eprintln!("  -s     chroma subsampling for colour (default 420)");
@@ -116,9 +116,26 @@ fn cmd_decode(args: &[String]) -> Result<(), String> {
         return Err("decode needs <in.mtc> <out.png>".into());
     }
     let (input, output) = (&args[2], &args[3]);
+    let mut max_side = 0usize;
+    let mut i = 4;
+    while i < args.len() {
+        if args[i] == "--max-side" && i + 1 < args.len() {
+            max_side = args[i + 1]
+                .parse()
+                .map_err(|_| "bad --max-side".to_string())?;
+            i += 2;
+        } else {
+            return Err(format!("unknown argument: {}", args[i]));
+        }
+    }
     let data = fs::read(input).map_err(|e| format!("{}: {}", input, e))?;
     let t0 = Instant::now();
-    let img = container::decode(&data)?;
+    // A bounded size decodes straight to it instead of building the full picture.
+    let img = if max_side > 0 {
+        container::decode_downsized(&data, max_side)?
+    } else {
+        container::decode(&data)?
+    };
     let ms = t0.elapsed().as_secs_f64() * 1000.0;
     imgio::save(output, &img)?;
     println!(

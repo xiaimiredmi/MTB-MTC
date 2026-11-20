@@ -44,6 +44,12 @@ Pictures land in `Android/data/dev.mtc/files/Pictures`, which needs no storage
 permission on any supported version and is reachable over USB. The camera asks
 only for `CAMERA`.
 
+Memory is the thing that kills this app on a real phone, so it is budgeted:
+`android:largeHeap`, an 8 MP cap on the still, one thumbnail decode at a time,
+and `decode_downsized` in the codec, which builds a small picture directly instead
+of decoding full size and shrinking afterwards. Measured peak on the host for a
+12 MP file: 92.8 MB for a full decode, 64.9 MB for a 400 px one.
+
 Next to each picture sits a `<name>.mtc.thumb.png`, the grid's cache. Decoding a
 12 MP file to fill a grid cell takes about half a second on this machine and
 longer on a phone, so it happens once — right after the shutter, on the camera
@@ -124,6 +130,14 @@ slower, so these are a floor, not a promise:
 
 That is why the camera caps the still at 12 MP and the grid caches thumbnails.
 
+## When it crashes
+
+There is an uncaught-exception handler: a Java crash is appended to
+`Android/data/dev.mtc/files/crash.txt` with the time, thread, ABI, device model and
+stack trace. Native crashes (a fault inside the Rust library) do not go there —
+those need `adb logcat`. Either way, plugging the phone into the machine that
+built it is the fastest route: `adb logcat -s AndroidRuntime DEBUG libc mtc`.
+
 ## Known unknowns
 
 Nothing here has run on a phone yet — no device was attached while it was built.
@@ -133,9 +147,11 @@ left for real hardware:
 
 * **Colour range.** Handled by a switch rather than by detection; the default is
   limited range. If the first capture looks washed out, tap the switch.
-* **Preview framing.** `configureTransform` centre-crops with a quarter turn, the
-  standard recipe, but it is the sort of thing that needs an eye on a real
-  screen.
+* **Sensor angles.** The preview transform now turns by the same angle the still
+  gets (`stillRotation()`, derived from `SENSOR_ORIENTATION` and the display),
+  instead of the old hardcoded 90° recipe that put a 270° module upside down. The
+  camera header prints `传感器 90° 转 90°` so a wrong angle can be read off a
+  screenshot and reported exactly.
 * **Encode time** on a large sensor, and whether 12 MP at quality 88 is a
   sensible default on a mid-range phone.
 * **Front camera.** Both sensors are wired up and the maths is unit-tested, but

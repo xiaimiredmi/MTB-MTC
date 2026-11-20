@@ -35,6 +35,17 @@ fn take_bytes(env: &mut JNIEnv, array: JByteArray) -> Result<Vec<u8>, String> {
         .map_err(|e| format!("reading byte array: {}", e))
 }
 
+/// Run codec work behind a panic gate.
+///
+/// <p>A Rust panic unwinding out of an `extern "system"` function aborts the
+/// process, which on a phone is the app disappearing while the user looks at it.
+/// Nothing here should panic - `rust/tests/robustness.rs` feeds the decoder
+/// garbage to keep it that way - but a corrupt file from anywhere is not a reason
+/// to die, so a panic becomes a null return instead.
+fn guard<T>(f: impl FnOnce() -> T) -> Option<T> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).ok()
+}
+
 fn give_bytes(env: &mut JNIEnv, data: &[u8]) -> jbyteArray {
     match env.byte_array_from_slice(data) {
         Ok(a) => a.into_raw(),
@@ -60,12 +71,13 @@ pub extern "system" fn Java_dev_mtc_Mtc_encodeRgba(
     height: jint,
     quality: jint,
 ) -> jbyteArray {
-    let px = match take_bytes(&mut env, rgba) {
-        Ok(v) => v,
-        Err(_) => return std::ptr::null_mut(),
-    };
-    let (w, h) = (width.max(0) as usize, height.max(0) as usize);
-    match encode_rgba_bytes(px, w, h, quality) {
+    let blob = guard(|| {
+        let px = take_bytes(&mut env, rgba).ok()?;
+        let (w, h) = (width.max(0) as usize, height.max(0) as usize);
+        encode_rgba_bytes(px, w, h, quality)
+    })
+    .flatten();
+    match blob {
         Some(blob) => give_bytes(&mut env, &blob),
         None => std::ptr::null_mut(),
     }
@@ -94,39 +106,38 @@ pub extern "system" fn Java_dev_mtc_Mtc_encodeYuv(
     rotation: jint,
     mirror: jboolean,
 ) -> jbyteArray {
-    let (py, pu, pv) = match (
-        take_bytes(&mut env, y),
-        take_bytes(&mut env, u),
-        take_bytes(&mut env, v),
-    ) {
-        (Ok(a), Ok(b), Ok(c)) => (a, b, c),
-        _ => return std::ptr::null_mut(),
-    };
-    let (w, h) = (width.max(0) as usize, height.max(0) as usize);
-    if w == 0 || h == 0 {
-        return std::ptr::null_mut();
-    }
-    let y_stride = y_row_stride.max(width) as usize;
-    let uv_stride = uv_row_stride.max(width / 2) as usize;
-    let uv_pixel = uv_pixel_stride.max(1) as usize;
-    if py.len() < y_stride * h {
-        return std::ptr::null_mut();
-    }
+    let blob = guard(|| {
+        let py = take_bytes(&mut env, y).ok()?;
+        let pu = take_bytes(&mut env, u).ok()?;
+        let pv = take_bytes(&mut env, v).ok()?;
+        let (w, h) = (width.max(0) as usize, height.max(0) as usize);
+        if w == 0 || h == 0 {
+            return None;
+        }
+        let y_stride = y_row_stride.max(width) as usize;
+        let uv_stride = uv_row_stride.max(width / 2) as usize;
+        let uv_pixel = uv_pixel_stride.max(1) as usize;
+        if py.len() < y_stride.saturating_mul(h) {
+            return None;
+        }
 
-    let (rgba, ow, oh) = yuv_to_rgba(
-        &py,
-        &pu,
-        &pv,
-        w,
-        h,
-        y_stride,
-        uv_stride,
-        uv_pixel,
-        full_range != JNI_FALSE as jboolean,
-        rotation.max(0) as u32,
-        mirror != JNI_FALSE as jboolean,
-    );
-    match encode_rgba_bytes(rgba, ow, oh, quality) {
+        let (rgba, ow, oh) = yuv_to_rgba(
+            &py,
+            &pu,
+            &pv,
+            w,
+            h,
+            y_stride,
+            uv_stride,
+            uv_pixel,
+            full_range != JNI_FALSE as jboolean,
+            rotation.max(0) as u32,
+            mirror != JNI_FALSE as jboolean,
+        );
+        encode_rgba_bytes(rgba, ow, oh, quality)
+    })
+    .flatten();
+    match blob {
         Some(blob) => give_bytes(&mut env, &blob),
         None => std::ptr::null_mut(),
     }
@@ -144,39 +155,25 @@ pub extern "system" fn Java_dev_mtc_Mtc_decodeRgba(
     data: JByteArray,
     max_side: jint,
 ) -> jbyteArray {
-    let blob = match take_bytes(&mut env, data) {
-        Ok(v) => v,
-        Err(_) => return std::ptr::null_mut(),
-    };
-    let img = match container::decode(&blob) {
-        Ok(v) => v,
-        Err(_) => return std::ptr::null_mut(),
-    };
-    let rgba = img.to_rgba();
-    let (w, h) = (img.width, img.height);
-    let limit = max_side.max(0) as usize;
-    let out = if limit > 0 && (w > limit || h > limit) {
-        let step = ((w.max(h) + limit - 1) / limit).max(1);
-        downsample(&rgba, w, h, step)
-    } else {
-        pack(w, h, &rgba)
-    };
-    give_bytes(&mut env, &out)
+    let out = guard(|| {
+        let blob = take_bytes(&mut env, data).ok()?;
+        let limit = max_side.max(0) as usize;
+        // A bounded size decodes straight to that size, so the full RGBA buffer
+        // never exists; that is what keeps thumbnails cheap on a phone.
+        let img = if limit > 0 {
+            container::decode_downsized(&blob, limit).ok()?
+        } else {
+            container::decode(&blob).ok()?
+        };
+        Some(pack(img.width, img.height, &img.to_rgba()))
+    })
+    .flatten();
+    match out {
+        Some(out) => give_bytes(&mut env, &out),
+        None => std::ptr::null_mut(),
+    }
 }
 
-fn downsample(rgba: &[u8], w: usize, h: usize, step: usize) -> Vec<u8> {
-    let (ow, oh) = ((w + step - 1) / step, (h + step - 1) / step);
-    let mut out = Vec::with_capacity(8 + ow * oh * 4);
-    out.extend_from_slice(&(ow as u32).to_be_bytes());
-    out.extend_from_slice(&(oh as u32).to_be_bytes());
-    for y in (0..h).step_by(step) {
-        for x in (0..w).step_by(step) {
-            let o = (y * w + x) * 4;
-            out.extend_from_slice(&rgba[o..o + 4]);
-        }
-    }
-    out
-}
 
 /// `info(data) -> String` — a one-line summary for the header, or null.
 #[no_mangle]
@@ -185,20 +182,22 @@ pub extern "system" fn Java_dev_mtc_Mtc_info(
     _class: JClass,
     data: JByteArray,
 ) -> jni::sys::jstring {
-    let blob = match take_bytes(&mut env, data) {
-        Ok(v) => v,
-        Err(_) => return std::ptr::null_mut(),
-    };
-    let text = match container::probe(&blob) {
-        Ok(h) => format!(
+    let text = guard(|| {
+        let blob = take_bytes(&mut env, data).ok()?;
+        let h = container::probe(&blob).ok()?;
+        Some(format!(
             "{}x{} {} q{} v{}",
             h.width,
             h.height,
             h.mode_name(),
             h.quality,
             h.version
-        ),
-        Err(_) => return std::ptr::null_mut(),
+        ))
+    })
+    .flatten();
+    let text = match text {
+        Some(t) => t,
+        None => return std::ptr::null_mut(),
     };
     match env.new_string(text) {
         Ok(s) => s.into_raw(),

@@ -44,7 +44,10 @@ import java.util.concurrent.Executors;
  */
 public class GalleryActivity extends Activity {
     private static final int REQ_IMPORT = 7;
-    private final ExecutorService pool = Executors.newFixedThreadPool(3);
+    // One at a time: decoding a photo peaks at tens of megabytes, and three grid
+    // cells decoding at once is how the app got killed on a phone. The results are
+    // cached next to the pictures, so this costs a file once and nothing after.
+    private final ExecutorService pool = Executors.newFixedThreadPool(1);
     private final Handler ui = new Handler(Looper.getMainLooper());
     private final List<File> files = new ArrayList<>();
     private LruCache<String, Bitmap> cache;

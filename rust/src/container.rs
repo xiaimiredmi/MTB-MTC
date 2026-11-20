@@ -525,20 +525,7 @@ fn assemble(img: &Image, opts: &Options, aq_on: bool) -> Result<Vec<u8>, String>
 /// Decode a complete `.mtc` file.
 pub fn decode(data: &[u8]) -> Result<Image, String> {
     let h = probe(data)?;
-    let mut offset = HDR;
-    let mut alpha: Option<Vec<u8>> = None;
-    if h.has_alpha() {
-        if data.len() < HDR + 4 {
-            return Err("truncated alpha length".into());
-        }
-        let len = u32::from_le_bytes([data[12], data[13], data[14], data[15]]) as usize;
-        if data.len() < HDR + 4 + len {
-            return Err("truncated alpha payload".into());
-        }
-        let blob = &data[HDR + 4..HDR + 4 + len];
-        alpha = Some(decode_alpha(blob, h.width, h.height)?);
-        offset = HDR + 4 + len;
-    }
+    let (offset, alpha) = alpha_segment(data, &h)?;
     let payload = &data[offset..];
     if h.mode == mode::GRAY_LOSSLESS || h.mode == mode::RGB_LOSSLESS {
         let n = if h.mode == mode::GRAY_LOSSLESS { 1 } else { 3 };
@@ -624,6 +611,96 @@ pub fn decode(data: &[u8]) -> Result<Image, String> {
     }
 
     attach_alpha(solid, alpha, w, hh, channels)
+}
+
+/// Locate the main payload, decoding the alpha segment on the way past.
+fn alpha_segment(data: &[u8], h: &Header) -> Result<(usize, Option<Vec<u8>>), String> {
+    if !h.has_alpha() {
+        return Ok((HDR, None));
+    }
+    if data.len() < HDR + 4 {
+        return Err("truncated alpha length".into());
+    }
+    let len = u32::from_le_bytes([data[12], data[13], data[14], data[15]]) as usize;
+    if data.len() < HDR + 4 + len {
+        return Err("truncated alpha payload".into());
+    }
+    let blob = &data[HDR + 4..HDR + 4 + len];
+    Ok((HDR + 4 + len, Some(decode_alpha(blob, h.width, h.height)?)))
+}
+
+/// Decode straight to a smaller picture.
+///
+/// The coefficient stream has to be walked in full, because the model is
+/// sequential, but the output is sampled while the planes are converted, so the
+/// full-size RGBA buffer - the biggest single allocation in the decoder - never
+/// exists. A 12 MP photo becomes a 400 px thumbnail without ever holding 48 MB of
+/// RGBA, which is what keeps the grid alive on a phone. Lossless modes fall back
+/// to a full decode; they are not the camera path.
+pub fn decode_downsized(data: &[u8], max_side: usize) -> Result<Image, String> {
+    let h = probe(data)?;
+    if max_side == 0 || (h.width <= max_side && h.height <= max_side) {
+        return decode(data);
+    }
+    if h.mode == mode::GRAY_LOSSLESS || h.mode == mode::RGB_LOSSLESS {
+        return decode(data);
+    }
+    let (offset, alpha) = alpha_segment(data, &h)?;
+    let payload = &data[offset..];
+    let shapes = shapes_for(&h);
+    let clips: Vec<_> = (0..shapes.len()).map(clip_for_plane).collect();
+    let planes = codec::decode_planes(payload, &shapes, &clips, h.quality, h.layout(), h.aq());
+
+    let step = ((h.width.max(h.height) + max_side - 1) / max_side).max(1);
+    let ow = (h.width + step - 1) / step;
+    let oh = (h.height + step - 1) / step;
+    let solid_channels = if h.mode == mode::GRAY_LOSSY { 1 } else { 3 };
+    let mut solid = Vec::with_capacity(ow * oh * solid_channels);
+    match h.mode {
+        mode::GRAY_LOSSY => {
+            let p = &planes[0];
+            for y in (0..h.height).step_by(step) {
+                for x in (0..h.width).step_by(step) {
+                    solid.push(p.px[y * p.w + x].clamp(0, 255) as u8);
+                }
+            }
+        }
+        mode::RGB420_LOSSY => {
+            let (yp, cop, cgp) = (&planes[0], &planes[1], &planes[2]);
+            for y in (0..h.height).step_by(step) {
+                for x in (0..h.width).step_by(step) {
+                    let c = (y / 2) * cop.w + x / 2;
+                    let (r, g, b) = inv(yp.px[y * yp.w + x], cop.px[c], cgp.px[c]);
+                    solid.push(r.clamp(0, 255) as u8);
+                    solid.push(g.clamp(0, 255) as u8);
+                    solid.push(b.clamp(0, 255) as u8);
+                }
+            }
+        }
+        mode::RGB444_LOSSY => {
+            let (yp, cop, cgp) = (&planes[0], &planes[1], &planes[2]);
+            for y in (0..h.height).step_by(step) {
+                for x in (0..h.width).step_by(step) {
+                    let p = y * yp.w + x;
+                    let (r, g, b) = inv(yp.px[p], cop.px[p], cgp.px[p]);
+                    solid.push(r.clamp(0, 255) as u8);
+                    solid.push(g.clamp(0, 255) as u8);
+                    solid.push(b.clamp(0, 255) as u8);
+                }
+            }
+        }
+        other => return Err(format!("mode {} cannot be scaled", other)),
+    }
+    let alpha = alpha.map(|a| {
+        let mut small = Vec::with_capacity(ow * oh);
+        for y in (0..h.height).step_by(step) {
+            for x in (0..h.width).step_by(step) {
+                small.push(*a.get(y * h.width + x).unwrap_or(&255));
+            }
+        }
+        small
+    });
+    attach_alpha(solid, alpha, ow, oh, solid_channels)
 }
 
 /// Append the alpha channel, if the file carried one.

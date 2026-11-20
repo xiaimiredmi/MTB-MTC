@@ -49,7 +49,7 @@ import java.util.Locale;
 public class CameraActivity extends Activity {
     private static final int REQ_CAMERA = 1;
     /** Above this many pixels the still is captured smaller, to keep it snappy. */
-    private static final int MAX_PIXELS = 4000 * 3000;
+    private static final int MAX_PIXELS = 3264 * 2448;
 
     private final Handler ui = new Handler(Looper.getMainLooper());
     private HandlerThread worker;
@@ -328,10 +328,11 @@ public class CameraActivity extends Activity {
                 display = 0;
                 break;
         }
-        // The sensor is mounted at an angle; the display adds on the back camera
-        // and subtracts on the front one, which then needs mirroring too.
+        // The sensor is mounted at an angle. A back camera needs that angle
+        // clockwise; a front camera is mounted the other way round and then
+        // mirrored, so its turn runs the opposite way.
         if (front) {
-            return (sensorOrientation + display) % 360;
+            return ((360 - sensorOrientation) + display) % 360;
         }
         return ((sensorOrientation - display) + 360) % 360;
     }
@@ -350,23 +351,21 @@ public class CameraActivity extends Activity {
         if (preview.getWidth() == 0 || preview.getHeight() == 0) {
             return;
         }
-        int rotation = getWindowManager().getDefaultDisplay().getRotation();
+        // Turn by the same angle the still gets, measured from the sensor, so the
+        // preview and the saved picture cannot disagree. The old hardcoded
+        // "90 * (displayRotation - 2)" assumed a 90 degree sensor and put a 270
+        // degree module upside down.
+        int deg = stillRotation();
         float vw = preview.getWidth();
         float vh = preview.getHeight();
-        android.graphics.RectF viewRect =
-                new android.graphics.RectF(0, 0, vw, vh);
-        // The buffer arrives landscape: width and height swapped.
-        android.graphics.RectF bufferRect = new android.graphics.RectF(
-                0, 0, stillSize.getHeight(), stillSize.getWidth());
-        float cx = viewRect.centerX();
-        float cy = viewRect.centerY();
-        bufferRect.offset(cx - bufferRect.centerX(), cy - bufferRect.centerY());
+        boolean swapped = (deg % 180) != 0;
+        float bw = swapped ? stillSize.getHeight() : stillSize.getWidth();
+        float bh = swapped ? stillSize.getWidth() : stillSize.getHeight();
+        float scale = Math.max(vw / bw, vh / bh);
         android.graphics.Matrix matrix = new android.graphics.Matrix();
-        matrix.setRectToRect(viewRect, bufferRect,
-                android.graphics.Matrix.ScaleToFit.CENTER);
-        float scale = Math.max(vh / stillSize.getHeight(), vw / stillSize.getWidth());
-        matrix.postScale(scale, scale, cx, cy);
-        matrix.postRotate(90 * (rotation - 2), cx, cy);
+        matrix.postScale(scale, scale);
+        matrix.postRotate(deg);
+        matrix.postTranslate((vw - bw * scale) / 2f, (vh - bh * scale) / 2f);
         preview.setTransform(matrix);
     }
 
@@ -402,8 +401,9 @@ public class CameraActivity extends Activity {
                             @Override
                             public void run() {
                                 hud.setText(String.format(Locale.US,
-                                        "%d×%d · q%d · 直接写 .mtc",
-                                        stillSize.getWidth(), stillSize.getHeight(), quality));
+                                        "%d×%d · q%d · 传感器 %d° 转 %d°",
+                                        stillSize.getWidth(), stillSize.getHeight(), quality,
+                                        sensorOrientation, stillRotation()));
                             }
                         });
                     } catch (CameraAccessException e) {

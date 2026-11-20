@@ -135,7 +135,22 @@ public class ViewerActivity extends Activity {
                     return;
                 }
                 final String info = Mtc.info(data);
-                final Bitmap bmp = Mtc.toBitmap(Mtc.decodeRgba(data, 0));
+                // Full size first; if the heap refuses, decode smaller rather than
+                // letting the system kill the app.
+                Bitmap decoded = null;
+                try {
+                    decoded = Mtc.toBitmap(Mtc.decodeRgba(data, 0));
+                } catch (OutOfMemoryError e) {
+                    decoded = null;
+                }
+                if (decoded == null) {
+                    try {
+                        decoded = Mtc.toBitmap(Mtc.decodeRgba(data, 2048));
+                    } catch (OutOfMemoryError e) {
+                        decoded = null;
+                    }
+                }
+                final Bitmap bmp = decoded;
                 ui.post(new Runnable() {
                     @Override
                     public void run() {

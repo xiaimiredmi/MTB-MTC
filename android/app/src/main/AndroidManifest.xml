@@ -11,9 +11,11 @@
     <uses-feature android:name="android.hardware.camera.autofocus" android:required="false" />
 
     <application
+        android:name=".MtcApp"
         android:label="@string/app_name"
         android:icon="@mipmap/ic_launcher"
         android:allowBackup="false"
+        android:largeHeap="true"
         android:hardwareAccelerated="true"
         android:theme="@android:style/Theme.Material.Light.NoActionBar">
 
