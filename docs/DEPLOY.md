@@ -28,35 +28,79 @@ powershell -ExecutionPolicy Bypass -File site\build.ps1 -Serve
 仓库 → **Settings → Pages → Source: GitHub Actions**。仓库里已经有
 `.github/workflows/site.yml`，推一次 `site/` 的改动就会发布。
 
-### 1.2 在雨云控制台加 DNS
+### 1.2 在雨云控制台加 DNS（`mtc-xiaimiredmi.top`）
 
-雨云的域名 → 解析设置（DNS），加下面几条。`@` 表示域名本身，
-`www` 是子域。仓库用的 GitHub Pages IP 是固定的四个：
+雨云 → 域名 → **解析设置**，把下面这些逐条加上。`@` 就是 `mtc-xiaimiredmi.top`
+本身，`www` 是它的子域。
 
-| 主机记录 | 类型 | 记录值 | TTL |
-| --- | --- | --- | --- |
-| `@` | A | `185.199.108.153` | 600 |
-| `@` | A | `185.199.109.153` | 600 |
-| `@` | A | `185.199.110.153` | 600 |
-| `@` | A | `185.199.111.153` | 600 |
-| `www` | CNAME | `xiaimiredmi.github.io` | 600 |
+| 主机记录 | 类型 | 记录值 | TTL | 说明 |
+| --- | --- | --- | --- | --- |
+| `@` | A | `185.199.108.153` | 600 | GitHub Pages，四条都要 |
+| `@` | A | `185.199.109.153` | 600 | |
+| `@` | A | `185.199.110.153` | 600 | |
+| `@` | A | `185.199.111.153` | 600 | |
+| `@` | AAAA | `2606:50c0:8000::153` | 600 | 可选，IPv6 |
+| `@` | AAAA | `2606:50c0:8001::153` | 600 | 可选 |
+| `@` | AAAA | `2606:50c0:8002::153` | 600 | 可选 |
+| `@` | AAAA | `2606:50c0:8003::153` | 600 | 可选 |
+| `www` | CNAME | `xiaimiredmi.github.io` | 600 | 必须是 CNAME，不能是 A |
+| `_github-pages-challenge-xiaimiredmi` | TXT | 见下面 1.4 | 600 | 防域名被抢注 |
 
-（如果只用子域名，比如 `mtc.example.com`，那就只加一条 CNAME →
-`xiaimiredmi.github.io`。）
+> 裸域用 A 记录指向 GitHub 的四个 IP；`www` 用 CNAME 指向 `xiaimiredmi.github.io`。
+> 两者都配好之后，GitHub 会自动把 `www` 301 跳到裸域（因为 Custom domain 填的是裸域），
+> 证书也会同时覆盖两个名字——所以「两个都要能开」是免费的。
 
 ### 1.3 告诉 GitHub 这个域名
 
-Settings → Pages → **Custom domain** 填你的域名（`www` 或裸域都可以，二选一，
-另一个用 301 跳过去）→ Save。等几分钟，**Enforce HTTPS** 勾上就完事。
+Settings → Pages → **Custom domain** 一栏填 `mtc-xiaimiredmi.top` → Save。
+仓库里也已经放了 `site/CNAME`（内容就是这一行），发布时一起带上去，两边一致。
 
-DNS 生效可以用：
+### 1.4 如果提示域名未验证（Domain unverified）
+
+GitHub 为了防止别人把你的域名抢去当 Pages，会在 Custom domain 下方给一条
+**TXT 记录**，形如：
+
+| 主机记录 | 类型 | 记录值 |
+| --- | --- | --- |
+| `_github-pages-challenge-xiaimiredmi` | TXT | `xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx` |
+
+把那串原样加进雨云 DNS，然后回到页面点 **Verify**（点几次都无妨，DNS 需要几分钟）。
+
+### 1.5 等证书，勾 HTTPS
+
+DNS 生效后 GitHub 会自动签发证书（通常几分钟到半小时）。签发完成后
+**Enforce HTTPS** 才会变得可勾选，勾上，之后所有 http 自动跳 https。
+
+### 1.6 一条命令确认全部
+
+仓库里有 `site/check-domain.ps1`，它会把该查的都查一遍：四条 A 记录、`www` 的
+CNAME、首页能不能拿到、每个静态资源是不是 200、线上 `mtc.wasm` 的字节数是不是和本地
+刚构建的一模一样（不一样说明部署是旧的），以及 http 有没有跳到 https。
 
 ```powershell
-Resolve-DnsName mtc-xiaimiredmi.com -Type A
-Resolve-DnsName www.mtc-xiaimiredmi.com -Type CNAME
+powershell -ExecutionPolicy Bypass -File site\check-domain.ps1
 ```
 
-> 注意：Pages 的证书是 GitHub 自动签的，DNS 没生效之前勾 HTTPS 会失败，等一会儿再勾。
+全部通过时最后一行是 `all checks passed`，退出码 0。先只验本地也能用：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File site\check-domain.ps1 -Base http://127.0.0.1:8765
+```
+
+### 1.7 手动确认
+
+```powershell
+Resolve-DnsName mtc-xiaimiredmi.top -Type A          # 应返回 185.199.108-111.153
+Resolve-DnsName www.mtc-xiaimiredmi.top -Type CNAME  # 应返回 xiaimiredmi.github.io
+Invoke-WebRequest https://mtc-xiaimiredmi.top/ -UseBasicParsing | Select-Object StatusCode
+Invoke-WebRequest https://mtc-xiaimiredmi.top/mtc.wasm -Method Head -UseBasicParsing | Select-Object StatusCode
+```
+
+浏览器打开 https://mtc-xiaimiredmi.top/ ，点「用样图试试」，应看到 MTC ≈ 33.5 KB、
+PSNR ≈ 32.57 dB。
+
+> 国内访问 `185.199.*` 有时会被干扰。如果打不开但本地正常，那是线路问题，
+> 不是配置问题——这时才需要考虑第 2 条（雨云 VPS）。
 
 ---
 

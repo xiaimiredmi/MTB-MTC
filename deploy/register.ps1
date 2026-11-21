@@ -3,6 +3,10 @@
 # Everything here is per-user: HKCU and the user Path, no administrator needed.
 #   powershell -ExecutionPolicy Bypass -File deploy\register.ps1
 #   powershell -ExecutionPolicy Bypass -File deploy\register.ps1 -Unregister
+#
+# ASCII-only on purpose: Windows PowerShell 5.1 reads a .ps1 as ANSI unless it has
+# a BOM, so the one Chinese label is built from code points instead of written
+# literally (U+56FE U+7247 is "tu pian", picture).
 param(
     [switch]$Unregister,
     [string]$Bin = (Join-Path $PSScriptRoot '..\bin')
@@ -13,6 +17,7 @@ $Bin = (Resolve-Path $Bin).Path
 $viewer = Join-Path $Bin 'mtview.exe'
 $iconFile = Join-Path $PSScriptRoot 'mtc.ico'
 $icon = if (Test-Path $iconFile) { $iconFile } else { "$viewer,0" }
+$friendly = 'MTC ' + [char]0x56FE + [char]0x7247
 
 function Set-Default($path, $value) {
     if (-not (Test-Path $path)) { New-Item -Path $path -Force | Out-Null }
@@ -44,8 +49,8 @@ if (-not (Test-Path $viewer)) {
 # .mtc -> MTC.Image -> mtview
 Set-Default 'HKCU:\Software\Classes\.mtc' 'MTC.Image'
 Set-String 'HKCU:\Software\Classes\.mtc' 'Content Type' 'image/x-mtc'
-Set-Default 'HKCU:\Software\Classes\MTC.Image' 'MTC 图片'
-Set-String 'HKCU:\Software\Classes\MTC.Image' 'FriendlyTypeName' 'MTC 图片'
+Set-Default 'HKCU:\Software\Classes\MTC.Image' $friendly
+Set-String 'HKCU:\Software\Classes\MTC.Image' 'FriendlyTypeName' $friendly
 Set-String 'HKCU:\Software\Classes\MTC.Image' 'PerceivedType' 'image'
 Set-Default 'HKCU:\Software\Classes\MTC.Image\DefaultIcon' $icon
 Set-Default 'HKCU:\Software\Classes\MTC.Image\shell\open\command' ('"{0}" "%1"' -f $viewer)

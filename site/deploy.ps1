@@ -1,4 +1,4 @@
-# Push site/ to a server over SSH.
+﻿ Push site/ to a server over SSH.
 #
 # Packs the directory into one tar and copies it in a single connection, then
 # unpacks it on the far side — much faster than copying a hundred small files, and
