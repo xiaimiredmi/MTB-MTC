@@ -71,7 +71,33 @@ GitHub 为了防止别人把你的域名抢去当 Pages，会在 Custom domain �
 DNS 生效后 GitHub 会自动签发证书（通常几分钟到半小时）。签发完成后
 **Enforce HTTPS** 才会变得可勾选，勾上，之后所有 http 自动跳 https。
 
-### 1.6 一条命令确认全部
+### 1.6 为什么"直接访问 IP"一定是 404
+
+`185.199.108.153` 这类地址是 GitHub Pages 的**共享入口**，它靠请求头里的 `Host`
+判断你要看哪个站点。用浏览器打开 `http://185.199.108.153/`，`Host` 就是那个 IP，
+匹配不到任何站点，于是回 404 —— 这是正常的，**不代表部署失败**。
+
+DNS 没生效之前想确认站点已经在了，可以手动带 Host 头：
+
+```powershell
+# 站点内容（应为 200）
+curl.exe -H "Host: mtc-xiaimiredmi.top" http://185.199.108.153/
+# www 应 301 到裸域
+curl.exe -o NUL -w "%{http_code}`n" -H "Host: www.mtc-xiaimiredmi.top" http://185.199.108.153/
+```
+
+仓库脚本把这件事自动化了：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File site\check-domain.ps1 `
+  -Base http://185.199.108.153 -HostHeader mtc-xiaimiredmi.top -SkipDns
+```
+
+> 另一个坑：域名一旦绑上（Custom domain 已填），`https://<用户名>.github.io/<仓库>/`
+> 会 **301 跳到你的域名**。所以在 DNS 生效前，那个地址也打不开——不是坏了，是被重定向了。
+> 想先预览，只能临时把 Custom domain 清空。
+
+### 1.7 一条命令确认全部
 
 仓库里有 `site/check-domain.ps1`，它会把该查的都查一遍：四条 A 记录、`www` 的
 CNAME、首页能不能拿到、每个静态资源是不是 200、线上 `mtc.wasm` 的字节数是不是和本地
@@ -81,13 +107,18 @@ CNAME、首页能不能拿到、每个静态资源是不是 200、线上 `mtc.wa
 powershell -ExecutionPolicy Bypass -File site\check-domain.ps1
 ```
 
+它比对的是**哈希**：线上的 `index.html` / `styles.css` / `codec.js` / `app.js` 必须和仓库
+里的文件逐字节相同，所以"部署是旧的"这种问题跑一次就露；`mtc.wasm` 则只验 `\0asm`
+魔数和量级，因为 workflows 会在 Ubuntu 上**重新编译**它，跨平台产出的字节数本来就会差
+几百字节（实测 101 893 vs 本地 104 102）。
+
 全部通过时最后一行是 `all checks passed`，退出码 0。先只验本地也能用：
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File site\check-domain.ps1 -Base http://127.0.0.1:8765
 ```
 
-### 1.7 手动确认
+### 1.8 手动确认
 
 ```powershell
 Resolve-DnsName mtc-xiaimiredmi.top -Type A          # 应返回 185.199.108-111.153
