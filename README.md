@@ -77,6 +77,23 @@ mtcodec encode photo.jpg photo.mtc -q 90 -s 444
 
 The numbers, the bench tool and the comparison script live in `rust/`.
 
+## The site
+
+`site/` is one page that is also a working encoder: the codec is compiled to
+WebAssembly and the browser runs it on whatever image you drop in, so the numbers
+on the page are produced by the same Rust code the command line uses.
+
+```powershell
+powershell -ExecutionPolicy Bypass -File site\build.ps1 -Serve   # http://127.0.0.1:8765
+```
+
+For the bundled sample at q85 the page reports 34 304 bytes / 32.57 dB; the
+command line reports the same two numbers for the same file. `.github/workflows/site.yml`
+publishes `site/` to GitHub Pages once Pages is switched to "GitHub Actions" in
+the repository settings.
+
+![the site](site/assets/preview.jpg)
+
 ## Repository layout
 
 ```
@@ -89,6 +106,9 @@ rust/src/arith.rs      binary arithmetic coder
 rust/src/transform.rs  DCT matrix, zig-zag scan, quantiser table
 rust/src/bin/          mtbench (measurements) and mtview (egui viewer)
 deploy/register.ps1    file association and PATH, per user
+site/                  the WebAssembly demo page (index.html, codec.js, mtc.wasm)
+wasm/                  the thin cdylib that exposes the codec to JavaScript
+android/               camera + gallery app, no Gradle
 deploy/mtc.ico         icon the association uses
 samples/               three .mtc files the removed encoder wrote: two photographs
                        and a 960x540 picture with an alpha channel, plus that

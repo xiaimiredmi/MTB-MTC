@@ -297,6 +297,14 @@ fn shapes_for(h: &Header) -> Vec<(usize, usize)> {
     }
 }
 
+/// Only the early version 2 files stored alpha as a PNG; the codec itself never
+/// needs the image crate, so a build without it simply refuses those files.
+#[cfg(not(feature = "raster"))]
+fn read_alpha_png(_bytes: &[u8], _w: usize, _h: usize) -> Result<Vec<u8>, String> {
+    Err("this build cannot read a PNG alpha segment".into())
+}
+
+#[cfg(feature = "raster")]
 fn read_alpha_png(bytes: &[u8], w: usize, h: usize) -> Result<Vec<u8>, String> {
     let img = image::load_from_memory_with_format(bytes, image::ImageFormat::Png)
         .map_err(|e| format!("alpha channel is not a PNG ({})", e))?;

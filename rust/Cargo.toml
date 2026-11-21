@@ -10,10 +10,12 @@ path = "src/lib.rs"
 [[bin]]
 name = "mtcodec"
 path = "src/main.rs"
+required-features = ["raster"]
 
 [[bin]]
 name = "mtbench"
 path = "src/bin/mtbench.rs"
+required-features = ["raster"]
 
 [[bin]]
 name = "mtview"
@@ -21,14 +23,18 @@ path = "src/bin/mtview.rs"
 required-features = ["viewer"]
 
 [features]
-default = []
-viewer = ["dep:eframe"]
+# `raster` is what needs the image crate: reading and writing ordinary image
+# files, and the PNG-alpha segment of early files. The codec itself does not, so
+# the WebAssembly build turns it off.
+default = ["raster"]
+raster = ["dep:image"]
+viewer = ["dep:eframe", "raster"]
 # Build the viewer with eframe's off-screen screenshot hook, used by the build
 # check: EFRAME_SCREENSHOT_TO=shot.png takes one frame and exits.
 viewer-shot = ["viewer", "eframe/__screenshot"]
 
 [dependencies]
-image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp", "bmp"] }
+image = { version = "0.25", optional = true, default-features = false, features = ["png", "jpeg", "webp", "bmp"] }
 eframe = { version = "0.27", optional = true, default-features = false, features = ["glow", "default_fonts"] }
 
 [profile.release]

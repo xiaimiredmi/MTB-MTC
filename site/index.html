@@ -1,0 +1,215 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MTC · 自己写的图片编解码器</title>
+<meta name="description" content="MTC 是从零实现的图片编解码器：8×8 DCT、算术编码、自适应量化、无损与精确 alpha。整站演示在浏览器里用同一份 Rust 代码（WebAssembly）实时编解码。">
+<link rel="stylesheet" href="styles.css">
+<link rel="icon" href="assets/icon.png">
+</head>
+<body>
+<div class="aurora" aria-hidden="true">
+  <span class="blob b1"></span><span class="blob b2"></span><span class="blob b3"></span>
+</div>
+<div class="grain" aria-hidden="true"></div>
+
+<header class="nav">
+  <a class="brand" href="#top">
+    <span class="dot"></span><b>MTC</b>
+    <span class="tag">v2 stream</span>
+  </a>
+  <nav>
+    <a href="#demo">试一下</a>
+    <a href="#how">原理</a>
+    <a href="#numbers">数据</a>
+    <a href="#android">安卓</a>
+    <a class="ghost" href="#download">下载</a>
+  </nav>
+</header>
+
+<main id="top">
+  <!-- ───────────────────────────── hero ───────────────────────────── -->
+  <section class="hero">
+    <p class="kicker reveal">Rust · 自研格式 · 无第三方编解码库</p>
+    <h1 class="reveal">
+      把照片压小 <em>11%</em>，<br>
+      用的还是<span class="grad">自己写的</span>编解码器
+    </h1>
+    <p class="lede reveal">
+      8×8 DCT、零区量化、上下文算术编码、无损与精确 alpha。
+      <b>这个页面里的每一个字节都是你的浏览器现场算出来的</b>——同一份 Rust 代码，
+      编译成 WebAssembly，拖一张图进来就能看到。
+    </p>
+    <div class="cta reveal">
+      <a class="btn primary" href="#demo">立刻压一张图</a>
+      <a class="btn" href="https://github.com/xiaimiredmi/mtc" target="_blank" rel="noreferrer">看源代码</a>
+    </div>
+    <ul class="strip reveal" id="strip">
+      <li><b data-count="11.3" data-suffix="%">0%</b><span>同画质体积更小</span></li>
+      <li><b data-count="33.6" data-suffix=" dB">0</b><span>q85 · 2048×1152</span></li>
+      <li><b data-count="397" data-suffix=" KB">0</b><span>2048×1152 · q85 的体积</span></li>
+      <li><b data-count="0" data-suffix="">0</b><span>第三方编解码依赖</span></li>
+    </ul>
+  </section>
+
+  <!-- ───────────────────────────── demo ───────────────────────────── -->
+  <section id="demo" class="panel">
+    <div class="panelHead reveal">
+      <h2>在浏览器里压一张</h2>
+      <p>图片不出本机。编码、解码、PSNR 全在这里跑完。</p>
+    </div>
+
+    <div class="demoGrid reveal">
+      <div class="stage" id="stage">
+        <canvas id="cvA" width="16" height="16"></canvas>
+        <canvas id="cvB" width="16" height="16"></canvas>
+        <div class="split" id="split" aria-hidden="true"><i></i></div>
+        <div class="labels"><span>原图</span><span>MTC 解码</span></div>
+
+        <div class="drop" id="drop">
+          <p><b>把图片拖进来</b><br>PNG / JPG / WebP，或者一个 <code>.mtc</code></p>
+          <div class="row">
+            <label class="btn small">选文件<input id="file" type="file" accept="image/*,.mtc" hidden></label>
+            <button class="btn small" id="sample">用样图试试</button>
+          </div>
+          <p class="fine" id="stageNote">还没算过——数据会出现在右边。</p>
+        </div>
+      </div>
+
+      <div class="controls">
+        <div class="field">
+          <label for="q">质量 <output id="qv">85</output></label>
+          <input id="q" type="range" min="10" max="100" value="85" step="1">
+        </div>
+        <div class="seg" role="group" aria-label="色度">
+          <button data-sub="420" class="on">4:2:0</button>
+          <button data-sub="444">4:4:4</button>
+          <button data-sub="lossless">无损</button>
+        </div>
+        <label class="switch">
+          <input id="aq" type="checkbox">
+          <span>自适应量化 <em>(实测更费码率)</em></span>
+        </label>
+
+        <dl class="stats" id="stats">
+          <div><dt>原始像素</dt><dd id="s0">—</dd></div>
+          <div><dt>MTC</dt><dd id="s1">—</dd></div>
+          <div><dt>每像素</dt><dd id="s2">—</dd></div>
+          <div><dt>PSNR</dt><dd id="s3">—</dd></div>
+          <div><dt>编码</dt><dd id="s4">—</dd></div>
+          <div><dt>解码</dt><dd id="s5">—</dd></div>
+        </dl>
+
+        <canvas id="curve" width="320" height="120"></canvas>
+        <p class="fine">一条真实的率失真曲线：横轴 PSNR，纵轴每像素字节，越靠左下越好。</p>
+
+        <div class="row">
+          <button class="btn small" id="save" disabled>下载 .mtc</button>
+          <button class="btn small" id="asPng" disabled>导出 PNG</button>
+        </div>
+      </div>
+    </div>
+
+    <pre class="hex reveal" id="hex">等待第一张图片…</pre>
+  </section>
+
+  <!-- ───────────────────────────── how ───────────────────────────── -->
+  <section id="how" class="panel">
+    <div class="panelHead reveal">
+      <h2>它到底怎么压的</h2>
+      <p>一条主线，五步，每一步都可以单独解释给你听。</p>
+    </div>
+    <ol class="steps">
+      <li class="reveal"><span>01</span><h3>YCoCg 换色</h3><p>可逆整数变换，把亮度与两个色差分开放。色度再用 <code>×1.35</code> 的步长多压一点。</p></li>
+      <li class="reveal"><span>02</span><h3>8×8 DCT</h3><p>正交基，直流系数正好等于块均值 ×8，所以量化可以按像素级误差直接定步长。</p></li>
+      <li class="reveal"><span>03</span><h3>零区量化</h3><p>交流系数用 <code>0.65</code> 个步长的零区：小的直接归零，省下的字节比丢掉的精度多得多。</p></li>
+      <li class="reveal"><span>04</span><h3>上下文算术编码</h3><p>11 位自适应概率、按频带分模型，<code>last</code> 还用前一块的稀疏程度做上下文。</p></li>
+      <li class="reveal"><span>05</span><h3>容器</h3><p>12 字节头加若干数据段。同一份容器放有损、无损、alpha，版本号只决定系数模型的布局。</p></li>
+    </ol>
+
+    <div class="split2 reveal">
+      <div class="card">
+        <h3>自适应量化，为什么默认关着</h3>
+        <p>每个 16×16 瓦片一个倍率（0.70×–1.40×），编码器按瓦片活跃度选档、对前一片差分编码、向低频倾斜。</p>
+        <p>固定 <code>-q</code> 下它确实更好看（约 +0.3 dB），但同 PSNR 下要多花 <b>8.5%</b> 字节。所以默认关，勾上就能在这个页面里自己复现。</p>
+      </div>
+      <div class="card">
+        <h3>12 字节的头，就这么点</h3>
+        <p class="mono">magic 4 · version 1 · mode 1 · quality 1 · flags 1 · width 2 · height 2</p>
+        <p>上面那堆十六进制就是你这张图的真实头 12 字节。没有 EXIF，没有元数据块——格式小到可以在一屏里讲完。</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ───────────────────────────── numbers ───────────────────────────── -->
+  <section id="numbers" class="panel">
+    <div class="panelHead reveal">
+      <h2>测出来的，不是吹出来的</h2>
+      <p>四张 512×512 实拍，每张六个质量档，全部按<b>同 PSNR</b> 比较（同一个 <code>-q</code> 比是不公平的）。</p>
+    </div>
+    <div class="bars reveal" id="bars">
+      <div class="bar"><span>交流零区</span><i style="--w:78%"></i><b>−7.8%</b></div>
+      <div class="bar"><span>DC 二维预测</span><i style="--w:31%"></i><b>−3.1%</b></div>
+      <div class="bar"><span>last 上下文</span><i style="--w:5%"></i><b>−0.45%</b></div>
+      <div class="bar neg"><span>频带上下文</span><i style="--w:14%"></i><b>+1.4%</b></div>
+      <div class="bar neg"><span>逐瓦片 AQ</span><i style="--w:85%"></i><b>+8.5%</b></div>
+    </div>
+    <div class="tableWrap reveal">
+      <table>
+        <thead><tr><th>图片</th><th>v1 字节</th><th>v2 字节</th><th>变化</th></tr></thead>
+        <tbody>
+          <tr><td>photo_a</td><td>21 115</td><td>20 041</td><td class="good">−5.3%</td></tr>
+          <tr><td>photo_b</td><td>15 747</td><td>13 085</td><td class="good">−15.3%</td></tr>
+          <tr><td>photo_c</td><td>50 610</td><td>46 571</td><td class="good">−8.5%</td></tr>
+          <tr><td>render_d</td><td>4 175</td><td>3 433</td><td class="good">−15.8%</td></tr>
+          <tr class="total"><td>合计（几何平均）</td><td>—</td><td>—</td><td class="good">−11.3%</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="fine center reveal">主机实测：2048×1152 · q85 · 4:2:0 → 397 KB / 33.63 dB / 编码 ~115 ms、解码 ~130 ms（单核）。手机上会慢一些，安卓端因此把单张上限压到 8 MP。</p>
+  </section>
+
+  <!-- ───────────────────────────── android ───────────────────────────── -->
+  <section id="android" class="panel">
+    <div class="panelHead reveal">
+      <h2>手机上：相机直接写 .mtc</h2>
+      <p>整条路径不产生一张 JPEG。Camera2 的 YUV 帧进 Rust，出来的文件就已经是 MTC。</p>
+    </div>
+    <div class="androidGrid reveal">
+      <div class="card">
+        <h3>三个界面</h3>
+        <ul class="ticks">
+          <li><b>相册</b>：网格、缩略图缓存、长按删除、从文件导入</li>
+          <li><b>相机</b>：前后切换、色彩范围开关、实时显示角度</li>
+          <li><b>查看器</b>：双指缩放、双击回中、导出 PNG 到系统相册</li>
+        </ul>
+      </div>
+      <div class="card">
+        <h3>省内存的几件事</h3>
+        <p>解码按目标尺寸直接出图（12 MP 峰值 92.8 MB → 400 px 时 64.9 MB），缩略图一次只解一张并落盘缓存，8 MP 上限，<code>largeHeap</code>。</p>
+        <p class="fine">安装包 783 KB，含 arm64 与 armeabi-v7a，无 Gradle、无 Maven，一条 PowerShell 脚本出包。</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ───────────────────────────── download ───────────────────────────── -->
+  <section id="download" class="panel center">
+    <h2 class="reveal">拿走它</h2>
+    <p class="lede center reveal">格式文档、基准数据、安卓包，都在同一个仓库里。</p>
+    <div class="cta reveal">
+      <a class="btn primary" href="https://github.com/xiaimiredmi/mtc" target="_blank" rel="noreferrer">GitHub</a>
+      <a class="btn" href="https://github.com/xiaimiredmi/mtc/tree/main/android" target="_blank" rel="noreferrer">安卓 APK（783 KB）</a>
+      <a class="btn" href="https://github.com/xiaimiredmi/mtc/blob/main/docs/FORMAT.md" target="_blank" rel="noreferrer">格式规范</a>
+    </div>
+  </section>
+</main>
+
+<footer>
+  <span>MTC · MIT</span>
+  <span id="footnote">页面上的编码器是 WebAssembly，和命令行走同一份代码。</span>
+</footer>
+
+<script type="module" src="app.js"></script>
+</body>
+</html>

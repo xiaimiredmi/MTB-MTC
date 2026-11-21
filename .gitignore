@@ -5,6 +5,9 @@ rust/bench/data/
 # the local binary folder at the repository root only
 /bin/
 
+# --- WebAssembly ---
+wasm/target/
+
 # --- Android ---
 # the .so files come out of cargo-ndk during every build
 android/app/src/main/jniLibs/

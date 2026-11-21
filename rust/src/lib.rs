@@ -19,6 +19,7 @@ pub mod arith;
 pub mod codec;
 pub mod container;
 pub mod entropy;
+#[cfg(feature = "raster")]
 pub mod imgio;
 pub mod lossless;
 pub mod transform;
