@@ -79,7 +79,8 @@ The numbers, the bench tool and the comparison script live in `rust/`.
 
 ## The site
 
-`site/` is one page that is also a working encoder: the codec is compiled to
+`site/` is one page that is also a working encoder (published at `mtc-xiaimiredmi.*`
+once the domain is pointed at it — see [docs/DEPLOY.md](docs/DEPLOY.md)): the codec is compiled to
 WebAssembly and the browser runs it on whatever image you drop in, so the numbers
 on the page are produced by the same Rust code the command line uses.
 
